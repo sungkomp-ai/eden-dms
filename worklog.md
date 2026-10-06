@@ -379,3 +379,26 @@ Work Log:
 Stage Summary:
 - พื้นที่ chat เลื่อนขึ้นลงภายในได้จริงทั้ง desktop และมือถือ — หน้าเว็บไม่ถูกดันยาวตามคำตอบ AI อีกต่อไป
 - สาเหตุเดียวกับ Task 10: flex item ใน container สูง auto → ใช้ความสูงแน่นอนแทน flex-1 (บทเรียนซ้ำ: พื้นที่ scroll ต้องมีความสูง definite เสมอ)
+
+---
+Task ID: 16
+Agent: main (Z.ai Code)
+Task: Push แพลตฟอร์มขึ้น GitHub (https://github.com/sungkomp-ai/) โดยสร้าง repo ใหม่
+
+Work Log:
+- ตรวจ token (บัญชี sungkomp-ai ถูกต้อง) + ตรวจสถานะ git: มี history เดิมเป็น commit UUID ไร้ความหมาย และ track ไฟล์ sandbox จำนวนมาก (upload/eden-core-master.zip 25MB + extracted, tool-results/ screenshots, .env, .zscripts, tests, download, examples, Caddyfile, task14/15*.png)
+- สแกน secret ใน src/prisma/db (ghp_/sk-/Bearer/AKIA) — ไม่พบ; .env มีเพียง DATABASE_URL path ของ sandbox (ไม่ลับแต่ไม่ควร push เพราะ absolute path เฉพาะเครื่อง)
+- เขียน README.md ใหม่ (ภาษาไทย): ภาพรวมระบบ, ตาราง 13 โมดูลพร้อม mapping โมดูล eden-core เดิม, tech stack, ขั้นตอนติดตั้ง (bun install / cp .env.example .env / db:generate / dev), โครงสร้างโปรเจกต์, ตาราง REST API, ส่วนอธิบายผู้ช่วย AI, หมายเหตุ mock data
+- สร้าง .env.example (DATABASE_URL=file:../db/custom.db — relative path พกพาได้)
+- อัปเดต .gitignore: แยกไฟล์ sandbox (upload/, tool-results/, .zscripts/, tests/, download/, examples/, mini-services/, Caddyfile, /task*.png) + เพิ่ม !.env.example (pattern .env* กลืนไฟล์ตัวอย่างไปก่อน — แก้แล้ว)
+- สร้าง clean history ด้วย orphan branch: git checkout --orphan → git rm --cached . → git add -A (เหลือ 15 root items ~1.3MB: src 103 ไฟล์, prisma schema+seed, db/custom.db ข้อมูล seed พร้อมรัน, configs, bun.lock, README, worklog) → commit เดียว "EDEN DMS — Disaster Management System (initial release)" (d494b71) → rename เป็น main
+  - เหตุผล: history เดิ่มมี zip 25MB + .env ฝังอยู่ใน commit เก่า — push แบบ full history จะเปียก 31MB และเสี่ยง leak; commit เดียวสะอาดและเบา
+- สร้าง repo ใหม่ผ่าน API: POST /user/repos { name: "eden-dms", private: false } → https://github.com/sungkomp-ai/eden-dms
+- เพิ่ม remote (token ฝังใน URL เฉพาะ .git/config ในเครื่อง) + git push -u origin main สำเร็จ (new branch main)
+- เพิ่ม topics 10 ตัว: disaster-management, nextjs, typescript, prisma, shadcn-ui, tailwindcss, sahana-eden, thailand, gis, ai-assistant
+- Verify: git ls-remote origin → HEAD = d494b71 ตรงกับ commit ล่าสุด; GET /contents แบบ authenticated → ไฟล์ครบ 16 root items (.env.example, README.md, db, prisma, src, worklog.md ฯลฯ); default_branch=main, visibility=public (หมายเหตุ: API แบบไม่ใส่ token เจอ rate limit + "size":0 เป็นแค่ lazy counter ของ GitHub — เนื้อหาจริงครบ)
+
+Stage Summary:
+- แพลตฟอร์ม EDEN DMS อยู่บน GitHub แล้ว: https://github.com/sungkomp-ai/eden-dms (public, branch main, commit เดียวสะอาด ~1.3MB)
+- Repo พร้อมให้คนอื่น clone และรันได้ทันที: มี README ภาษาไทยครบ, .env.example, db/custom.db ข้อมูลตัวอย่าง seed ไว้แล้ว + seed script (bun prisma/seed.ts)
+- ไม่มีไฟล์ sandbox/secret หลุดขึ้น repo (ตัด upload/ zip 25MB, .env, screenshots, tool-results ทั้งหมด); local main เปลี่ยนเป็น clean orphan history และ track origin/main แล้ว — commit ถัด ๆ ไป push ต่อได้ปกติ
