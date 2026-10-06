@@ -1,0 +1,312 @@
+// EDEN DMS — Disaster Management System
+// Modern reimplementation of Sahana Eden (eden-core)
+// Schema ครอบคลุม 12 โมดูล: dashboard, incidents(sit), sitreps(cms), persons(pr),
+// organizations(org), hr(hrm), shelters, inventory, requests, map(gis), alerts(msg), admin
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// GIS — ตำแหน่งที่ตั้ง (แผนที่/โครงสร้างพื้นที่)
+// ==========================================
+model Location {
+  id        String     @id @default(cuid())
+  name      String
+  level     String     // province | district | subdistrict
+  lat       Float?
+  lng       Float?
+  parentId  String?
+  parent    Location?  @relation("LocationTree", fields: [parentId], references: [id])
+  children  Location[] @relation("LocationTree")
+  incidents Incident[]
+  shelters  Shelter[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("locations")
+}
+
+// ==========================================
+// SIT — เหตุการณ์ภัยพิบัติ
+// ==========================================
+model Incident {
+  id             String           @id @default(cuid())
+  code           String           @unique // รหัสเหตุการณ์ เช่น INC-2568-001
+  title          String
+  type           String           // flood | earthquake | fire | landslide | storm | drought | epidemic | other
+  severity       String           @default("medium") // low | medium | high | critical
+  status         String           @default("active") // active | monitoring | resolved | closed
+  description    String?
+  locationId     String?
+  location       Location?        @relation(fields: [locationId], references: [id])
+  locationName   String? // ชื่อพื้นที่แบบข้อความ (ตำบล/อำเภอ/จังหวัด)
+  lat            Float?
+  lng            Float?
+  affectedPeople Int              @default(0)
+  injured        Int              @default(0)
+  deceased       Int              @default(0)
+  startDate      DateTime         @default(now())
+  endDate        DateTime?
+  reports        IncidentReport[]
+  persons        Person[]
+  aidRequests    AidRequest[]
+  alerts         Alert[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@map("incidents")
+}
+
+// ==========================================
+// CMS + SIT — รายงานสถานการณ์ (SITREP)
+// ==========================================
+model IncidentReport {
+  id         String   @id @default(cuid())
+  incidentId String?
+  incident   Incident? @relation(fields: [incidentId], references: [id])
+  title      String
+  content    String
+  status     String   @default("published") // draft | published
+  author     String   @default("ผู้ปฏิบัติงาน")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("incident_reports")
+}
+
+// ==========================================
+// PR — ทะเบียนบุคคล (ผู้ประสบภัย/สูญหาย)
+// ==========================================
+model Person {
+  id               String    @id @default(cuid())
+  firstName        String
+  lastName         String
+  nationalId       String? // เลขบัตรประชาชน
+  gender           String    @default("unknown") // male | female | other | unknown
+  age              Int?
+  phone            String?
+  address          String?
+  status           String    @default("safe") // missing | found | safe | injured | deceased | evacuated
+  lastSeenLocation String?
+  lastSeenAt       DateTime?
+  incidentId       String?
+  incident         Incident? @relation(fields: [incidentId], references: [id])
+  shelterId        String?
+  shelter          Shelter?  @relation(fields: [shelterId], references: [id])
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("persons")
+}
+
+// ==========================================
+// ORG — ทะเบียนองค์กร
+// ==========================================
+model Organization {
+  id            String          @id @default(cuid())
+  name          String
+  type          String          @default("ngo") // government | ngo | international | private | community
+  sector        String? // ภาคส่วน: health | water | food | education | logistics | search_rescue | other
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  website       String?
+  status        String          @default("active") // active | inactive
+  description   String?
+  resources     HumanResource[]
+  warehouses    Warehouse[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@map("organizations")
+}
+
+// ==========================================
+// HRM — บุคลากร/อาสาสมัคร
+// ==========================================
+model HumanResource {
+  id             String        @id @default(cuid())
+  name           String
+  type           String        @default("volunteer") // staff | volunteer | trainee
+  jobTitle       String?
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  phone          String?
+  email          String?
+  skills         String? // comma-separated เช่น "แพทย์,ปฐมพยาบาล"
+  status         String        @default("available") // available | assigned | on_mission | unavailable
+  baseLocation   String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@map("human_resources")
+}
+
+// ==========================================
+// Shelter — ศูนย์พักพิง/ศูนย์อพยพ
+// ==========================================
+model Shelter {
+  id               String   @id @default(cuid())
+  name             String
+  type             String   @default("community_center") // school | temple | community_center | stadium | tent | hotel
+  address          String?
+  locationId       String?
+  location         Location? @relation(fields: [locationId], references: [id])
+  capacity         Int      @default(0)
+  currentOccupancy Int      @default(0)
+  contactPerson    String?
+  phone            String?
+  status           String   @default("open") // open | full | closed | preparing
+  facilities       String? // comma-separated: water | electricity | medical | food | toilet
+  lat              Float?
+  lng              Float?
+  persons          Person[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("shelters")
+}
+
+// ==========================================
+// Inventory — คลังสินค้า + สินค้า/เวชภัณฑ์
+// ==========================================
+model Warehouse {
+  id             String          @id @default(cuid())
+  name           String
+  purpose        String?         // ประเภทคลัง เช่น อาหาร/น้ำดื่ม, เวชภัณฑ์, เครื่องมือ, เชื้อเพลิง
+  address        String?
+  manager        String?
+  phone          String?
+  capacity       Int             @default(0)
+  organizationId String?         // หน่วยงานเจ้าของคลัง
+  organization   Organization?   @relation(fields: [organizationId], references: [id])
+  items          InventoryItem[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@map("warehouses")
+}
+
+model InventoryItem {
+  id           String    @id @default(cuid())
+  name         String
+  category     String    @default("other") // food | water | medical | clothing | shelter | tools | fuel | relief | hygiene | other
+  type         String?   // ประเภท เช่น ขวด, ถุง, ชุด, แก๊ส
+  size         String?   // ขนาด เช่น 600ml, 5 กก., 6 คน
+  unit         String    @default("ชิ้น")
+  quantity     Int       @default(0)
+  minQuantity  Int       @default(0) // จุดสั่งซื้อขั้นต่ำ
+  warehouseId  String?
+  warehouse    Warehouse? @relation(fields: [warehouseId], references: [id])
+  expiryDate   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("inventory_items")
+}
+
+// ==========================================
+// Requests — คำขอความช่วยเหลือ
+// ==========================================
+model AidRequest {
+  id            String    @id @default(cuid())
+  requestCode   String    @unique // REQ-xxxx
+  requesterName String
+  requesterOrg  String?
+  type          String    @default("food") // food | water | medical | shelter | evacuation | search_rescue | other
+  priority      String    @default("medium") // low | medium | high | urgent
+  status        String    @default("pending") // pending | approved | in_progress | fulfilled | rejected
+  quantity      String?
+  description   String?
+  locationName  String?
+  incidentId    String?
+  incident      Incident? @relation(fields: [incidentId], references: [id])
+  assignedTo    String? // ชื่อหน่วยงานที่รับผิดชอบ
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("aid_requests")
+}
+
+// ==========================================
+// GIS — ชั้นข้อมูลแผนที่ (KML/GeoJSON นำเข้า + API)
+// ==========================================
+model MapLayer {
+  id           String   @id @default(cuid())
+  name         String
+  sourceType   String   @default("kml_file") // kml_file | geojson_file | url_kml | url_geojson
+  sourceUrl    String? // ที่มา (ถ้านำเข้าจาก URL/API)
+  data         String   @default("{}") // GeoJSON FeatureCollection (JSON string)
+  color        String   @default("#14b8a6") // สีสัญลักษณ์ของชั้นข้อมูล
+  visible      Boolean  @default(true)
+  featureCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("map_layers")
+}
+
+// ==========================================
+// MSG — การแจ้งเตือน/สื่อสาร
+// ==========================================
+model Alert {
+  id          String    @id @default(cuid())
+  title       String
+  message     String
+  channel     String    @default("broadcast") // sms | email | broadcast | app
+  severity    String    @default("info") // info | warning | critical
+  audience    String    @default("all") // all | area | volunteers | officers
+  status      String    @default("draft") // draft | scheduled | sent
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  incidentId  String?
+  incident    Incident? @relation(fields: [incidentId], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("alerts")
+}
+
+// ==========================================
+// ADMIN — ผู้ใช้ / Audit Log / ตั้งค่า
+// ==========================================
+model User {
+  id          String    @id @default(cuid())
+  email       String    @unique
+  name        String
+  role        String    @default("officer") // admin | coordinator | officer | volunteer
+  status      String    @default("active") // active | inactive
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("users")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userName  String   @default("system")
+  action    String // create | update | delete | login | send | approve
+  module    String // incidents | persons | ...
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}

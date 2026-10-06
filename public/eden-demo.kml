@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>จุดบัญชาการหน้า</name>
+      <description>Forward Command Post — สะพานนวัฒนธรรม</description>
+      <Point><coordinates>98.9850,18.7850,0</coordinates></Point>
+    </Placemark>
+    <Placemark>
+      <name>เส้นทางอพยพสำรอง</name>
+      <description>ทางหลวง 108 → โรงเรียนสันทราย</description>
+      <LineString><coordinates>98.9600,18.8200,0 99.0000,18.8400,0 99.0400,18.8550,0</coordinates></LineString>
+    </Placemark>
+  </Document>
+</kml>
