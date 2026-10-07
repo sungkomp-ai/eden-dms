@@ -586,3 +586,18 @@ Stage Summary:
 - P1 ปิดครบ G1–G4 ตามแผนใน docs/ARCHITECTURE-COMPARISON.md §8.1: G1 accountability (login+audit+createdBy), G2 soft-delete/uuid, G3 Person ลึก (DOB/contacts/presence trail), G4 movement ledger (occupancy+stock+low-stock alert)
 - สถาปัตยกรรมที่ตัดสินใจ: session แบบ HMAC cookie ไม่ใช้ NextAuth (ลด dependency/ตรวจสอบง่าย — เทียบเท่าตามเป้าหมาย 1.2), soft-delete ผ่าน lib กลางจึงครบทุก route โดยอัตโนมัติ, ledger อัปเดตตัวเลขใน $transaction เดียวกับการบันทึก
 - Scorecard คาดหวังจากเอกสารฉบับ 1.1: ความน่าเชื่อถือเชิงระบบ 2 → 4, Person 2.5 → 4, Shelter/Inventory 3 → 4.5
+
+---
+Task ID: 18
+Agent: Z.ai Code (main)
+Task: สรุป "update สถานการณ์และการช่วยเหลือน้ำท่วมของไทย" ด้วย web-search
+
+Work Log:
+- ค้น 8 ชุดคำสั่ง (web_search CLI) ครอบคลุม: สถานการณ์ล่าสุด, การเยียวยา, ข้อมูล ปภ., เขื่อนเจ้าพระยา-ป่าสัก, ภาคใต้
+- ตรวจวันที่ระบบ: 7 ต.ค. 2026 (กทม. เวลา 20:13) เพื่อกรองข่าวให้เป็นเหตุการณ์ 2569 เท่านั้น (แยกจากเหตุการณ์ปลายปี 2568)
+- สรุปตัวเลขจาก ปภ./ThaiPBS/PRD/ประชาไท/Thansettakij ประกอบเป็น briefing ภาษาไทย
+
+Stage Summary:
+- สถานการณ์ 7 ต.ค. 69: น้ำท่วม 27 จังหวัด + กทม. (123 อำเภอ), กระทบ ~1.1 ล้านครัวเรือน / 3.1 ล้านคน, เสียชีวิต 52 ราย; กทม. 329,000 ครัวเรือน น้ำลดลง
+- เยียวยา 9,000 บาท/ครัวเรือน ลงทะเบียนผ่านแอป "ทางรัฐ" / flood68.disaster.go.th
+- ยังไม่แตะโค้ด/DB ของแพลตฟอร์ม — เสนอทางเลือกต่อผู้ใช้: นำเข้าเหตุการณ์นี้เป็น Incident จริงใน EDEN DMS
