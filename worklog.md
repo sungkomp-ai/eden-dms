@@ -402,3 +402,71 @@ Stage Summary:
 - แพลตฟอร์ม EDEN DMS อยู่บน GitHub แล้ว: https://github.com/sungkomp-ai/eden-dms (public, branch main, commit เดียวสะอาด ~1.3MB)
 - Repo พร้อมให้คนอื่น clone และรันได้ทันที: มี README ภาษาไทยครบ, .env.example, db/custom.db ข้อมูลตัวอย่าง seed ไว้แล้ว + seed script (bun prisma/seed.ts)
 - ไม่มีไฟล์ sandbox/secret หลุดขึ้น repo (ตัด upload/ zip 25MB, .env, screenshots, tool-results ทั้งหมด); local main เปลี่ยนเป็น clean orphan history และ track origin/main แล้ว — commit ถัด ๆ ไป push ต่อได้ปกติ
+
+---
+Task ID: 17-a
+Agent: Explore (controllers inventory)
+Task: สำรวจ controllers/functions ของ eden-core (FUNCTION/FEATURE INVENTORY ฝั่งต้นฉบับ)
+Work Log:
+- อ่าน worklog.md ทั้งไฟล์ (บริบท: EDEN DMS reimplementation ผ่านมาแล้ว 16 tasks, 13 โมดูล, อยู่บน GitHub แล้ว)
+- อ่าน metadata: ABOUT, README.md, INSTALL, VERSION (nursix-dev-5066-g6620ed10d, 2021-08-28), Dockerfile (web2py R-2.9.11 + Ubuntu 18.04), .travis.yml (Python 3.7, ทดสอบ mysql/sqlite/postgres-11/postgis), .gitmodules (private/eden_deploy), docs/VM.txt + epydoc.conf
+- เขียน Python script parse controllers ทั้ง 18 ไฟล์ (15,473 บรรทัด): ดึง top-level def ครบ 373 functions + docstring + decorator @auth.s3_requires_membership + จำแนก REST (เรียก s3_rest_controller/s3_request) vs page/helper
+- ยืนยันว่าไม่มี s3.restful ใน controllers เลย — REST ทั้งหมดผ่าน s3_rest_controller()/s3db.*_controller(); มี @auth.s3_requires_membership 23 จุด (admin 12, msg 9, xforms 2)
+- อ่านเชิงลึก code สำคัญ: default.index (homepage menu boxes: Situation Awareness/4W/Manage Resources/Manage Aid + org list + inline login/register + RSS), default.user (login/register/verify_email/profile), default.person (profile user+person+HR+map), gis.index/config, msg.compose/message, sync.sync (negotiate resource), setup.index/deployment (wizard + ดึง templates.json จาก remote repo), sit.py, auth.py, errors.py, mobile.py, cron/sms_handler_modem.py
+- สำรวจ cron/ (crontab 0 bytes ว่าง, scheduler.py 44 bytes = worker_loop เท่านั้น), languages/ 8 ไฟล์ (รูปแบบ web2py T() dict), docs/ 2 ไฟล์
+- ยืนยันข้อจำกัด: ไม่มี models/ modules/ views/ static/ tests/ ใน extract นี้ (มีแค่ __init__.py เปล่า + controllers/cron/docs/languages); default.index อ้าง modules ที่ไม่มี controller ใน extract (event, cap, survey, project, req, inv, asset, vol, hms, cr)
+Stage Summary:
+- Inventory ครบ 373 top-level functions / 18 controllers: gis 63 (viewer+21 layer types+location+geocode+POI+GPS+proxy), hrm 48 (staff/skill/course/training/shift ฯลฯ), msg 52 (11 channel types + inbox/outbox + twitter search + facebook/twitter post), default 31 (home/auth OAuth/profile/audit/dynamic tables), org 38, pr 29, admin 21 (user/role/audit/translate/portable/scheduler), appadmin 18, cms 15, xforms 14 (ODK), setup 12 (deployment wizard), doc 11, sync 8 (repository/dataset), auth 7 (redirect→admin), mobile 2, sit 2, errors 1, custom 1
+- cron ว่างจริง: มีแค่ scheduler worker_loop + GSM modem polling thread (process_outbox + receive_msg ทุก 5 วิ)
+- i18n: web2py T() dict 8 ภาษา (bs 8,966 / de 6,546 / ar 4,328 / el 1,151 / dv 42 / dz 8 / crs 5 / en-gb 0) รวม 21,046 บรรทัด
+- ไม่สามารถรัน eden-core จาก extract นี้ได้ (ขาด models/modules/views) — ใช้เป็น URL surface + feature map สำหรับออกแบบ API ใหม่เท่านั้น
+
+---
+Task ID: 17-b
+Agent: Explore (s3db data model inventory)
+Task: สำรวจตาราง+field จริงจาก modules/s3db
+Work Log:
+- Parse define_table/tablename ทั้ง modules/s3db (13 ไฟล์, 52,674 LOC) แบบ segment-based (ตัด comment ทิ้ง) → ตาราง active จริง 299 ตาราง: pr 49, org 51, hrm 53, gis 42, setup 21, msg 37, cms 14, sync 9, auth 8, doc 6, s3 4, sit 3, translate 2 (+ auth_user/auth_group/auth_membership เป็น web2py tables ใน s3aaa.py ไม่ได้อยู่ s3db)
+- อ่าน TIER 1 ครบ field: pr_person, pr_pentity, pr_contact, pr_address, pr_group, pr_image, pr_identity, pr_person_details, pr_presence, pr_person_user; org_organisation, org_site(super), org_office, org_facility, org_sector, org_site_status/details; hrm_human_resource, hrm_job_title, hrm_skill, hrm_course, hrm_training, hrm_certification (hrm_skill_provision ถูก comment-out); sit.py ทั้งไฟล์ (sit_situation/sit_trackable/sit_presence); cms_post/series; msg_message(super)/outbox/email/sms/twitter; gis_location(L0-L5), gis_layer_entity, gis_config, gis_style, gis_projection, gis_marker; doc_entity/document; sync_dataset/repository
+- สกัด metadata กลางจาก s3fields.py S3MetaFields.all_meta_fields() = 13 fields ทุกตาราง: uuid, mci, deleted, deleted_fk, deleted_rb, created_on/by, modified_on/by, approved_by, owned_by_user, owned_by_group, realm_entity; super_entity() สร้าง key + deleted + instance_type + uuid
+- วิเคราะห์ patterns: pr_pentity super-entity (pe_id) รวม person/org/group/site/office/facility/forum/realm; org_site super-entity (site_id) รวม office/facility/basestation (+shelter/warehouse/hospital ใน template เต็ม); doc_entity (doc_id) สำหรับไฟล์แนบ; sit_trackable/sit_situation สำหรับ presence tracking; components ผ่าน add_components (ใคร component ของใครระบุได้ครบ); gis_location hierarchy L0-L5 + parent self-ref + path
+- ทำ mapping ไป Prisma 14 models ใหม่ (อ่าน schema.prisma): ครอบคลุม ~8% ของตาราง Eden; ช่องว่างสำคัญ = ไม่มี pentity/pe_id, contact/address/identity แยกตาราง, msg_channel+outbox จริง, doc uploads, sync, meta fields (deleted soft-delete, uuid, owned_by_user/group, realm_entity)
+Stage Summary:
+- Inventory ครบ 299 ตาราง + TIER 1 field ครบทุก field อยู่ในรายงาน task 17-b (บันทึก JSON สำรองที่ tool-results/s3db_inventory_final.json)
+- EDEN DMS ใหม่ (14 models) ยังเป็น "subset เชิงหน้าที่" ของ Eden โครงชัด: ทุก entity จริงใน Eden ผูกผ่าน pe_id/site_id/doc_id แต่ใหม่ใช้ FK ตรงแบบ relational ธรรมดา (อ่านง่ายกว่า แต่เสีย flexibility ของ super-entity + real-entities-as-components)
+- ช่องว่างที่ควรพิจารณาเสริมรอบหน้า: soft-delete flag + uuid ทุกตาราง, pr_contact/pr_identity เป็นตารางลูก, org_site แบบ polymorphic (shelter/warehouse = site), msg outbox/ช่องทาง, cms_series สำหรับ SITREP, doc_document แนบไฟล์
+
+---
+Task ID: 17-a (full extract)
+Agent: Explore (controllers/framework inventory — eden-core-full)
+Task: สำรวจ controllers/framework/templates/cron/views/languages ของ eden-core เต็ม (eden-core-full/eden-core-master/)
+Work Log:
+- ยืนยัน extract นี้มีครบ: models/ (00_settings,00_db,00_tables,tasks.py), modules/s3 (46 ไฟล์ 111,195 LOC), modules/s3db (14 ไฟล์ data models), views (173 ไฟล์), static/, languages 48 ไฟล์ 121,678 LOC (th.py 6,603 บรรทัด!) — ต่างจาก extract เดิมที่มีแค่ controllers
+- Parse AST controllers ทั้ง 18 ไฟล์ครบ 373 top-level functions (206 เป็น REST ผ่าน s3_rest_controller): gis 63/38, msg 52/37, default 31/8, admin 21/11, hrm 48/30, org 38/28, pr 29/26, cms 15/8, xforms 14/0 (ODK), setup 12/11, appadmin 18/0, doc 11/3, sync 8/5, auth 7/0 (redirect→admin), mobile 2, sit 2, errors 1, custom 1
+- sit.py: guard settings.has_module(c) else 404; index → s3db.cms_index(c) (หน้าแรกขับเคลื่อนด้วย CMS content); index_alt → redirect ไป report
+- default.index: ลอง custom page/หน้าแรกจาก template ก่อน → CMS post ผูกกับ default/index → 4 menu boxes (Situation Awareness: Map/Incidents/Alerts/Assessments; 4W: Organizations/Facilities/Activities/Projects; Manage Resources: Staff/Volunteers/Relief Goods/Assets; Manage Aid: Requests/Commitments/Sent&Received Shipments) → org list (aadata) + quick access เข้า site/facility + inline login/register + Google RSS feed
+- สำรวจ modules/s3 ครบทุกไฟล์ (class หลัก): s3rest S3Request (REST หลาย representation), s3resource/s3model/s3query (DAL abstraction), s3aaa 8,726 LOC (Auth/Permission/Audit), s3widgets 48 classes, s3forms, s3importer 5,236 LOC, s3pdf (reportlab), s3report (pivot), s3dashboard, s3msg (send email/sms via api-modem-smtp-tropo + gcm_push), s3sync, s3roles (Role Manager), s3track, s3xforms, s3gis 10,345 LOC (map client), s3layouts/s3menus/s3theme (ที่ modules/ level), s3oauth, s3migration, s3cfg 4,159 LOC (deployment settings)
+- templates: default (config.py 950 บรรทัด + seed CSVs auth_roles/gis_config/skill lists; เปิดโมดูล default,admin,appadmin,errors,setup,sync,translate,gis,pr,org,hrm,cms,doc,msg — event/cap/survey/project/req/inv/asset/vol ปิดอยู่), locations (L0 101 ประเทศ รวม TH), mobile, setup, skeleton, skeletontheme, templates.json {"default": "Default: HR"}
+- cron: crontab ว่าง, scheduler.py = worker_loop(heartbeat=20), sms_handler_modem.py = ModemThread ของ pygsm poll process_outbox+receive_msg ตลอด; models/tasks.py มี task functions (dummy, s3db_task, settings_task, maintenance, gis_download_kml, gis_update_location_tree, org_site_check) สำหรับ web2py scheduler
+- Deployment: Dockerfile Ubuntu 18.04 + web2py R-2.9.11 (apt: matplotlib,lxml,numpy,gdal,shapely,reportlab,tweepy,serial,xlwt,boto,ansible + pip selenium/sunburnt/TwitterSearch/requests; CMD web2py port 8000 /a eden); requirements.txt = python-dateutil + lxml; optional_requirements.txt = xlwt/Shapely/Pillow/GDAL/geopy/reportlab/pyserial/tweepy/xlrd/openpyxl/feedparser/numpy/selenium/sunburnt; .travis.yml Python 3.7 ทดสอบ 4 DB (mysql/sqlite3/postgres-11/postgres-11+postgis)
+Stage Summary:
+- Feature inventory ครบ 373 endpoints: แกนหลัก = default(auth/home) + gis(map 21 layer types) + msg(11 channels) + pr/org/hrm (registries) + cms/doc + admin(+appadmin) + sync/xforms/odk + setup wizard
+- s3 framework = "meta-framework" ให้ทุกโมดูล: REST CRUD หลาย format (html/json/xml/csv/xls/pdf/geojson/svg/shp), ACL/audit/roles, import/export/merge, pivot/dashboards/timeplot, notifications, sync, mobile forms — คือสิ่งที่ต้องออกแบบเทียบเมื่อเขียนเอกสารสถาปัตยกรรม
+- ภาษาไทยรองรับเต็มรูปแบบในต้นฉบับ (th.py 6,603 คำแปล) — อ้างอิงสำหรับ EDEN DMS ที่เป็นภาษาไทยแท้ได้
+
+---
+Task ID: 17 (main)
+Agent: main (Z.ai Code)
+Task: จัดทำเอกสารเปรียบเทียบสถาปัตยกรรม eden-core ต้นฉบับ vs EDEN DMS แบบละเอียด เพื่อตรวจความครบถ้วนโมดูล + ความละเอียดข้อมูล
+
+Work Log:
+- ผู้ใช้ส่ง eden-core-master.zip (เวอร์ชันเต็ม 8,022 ไฟล์) เพิ่ม → แตกที่ upload/eden-core-full/ (unzip ทั้งก้อน timeout เพราะ static/ จึงแตกแบบเลือกโฟลเดอร์ — ได้ครบ: modules/s3db 13 ไฟล์ 52,674 LOC = นิยามตารางจริงทั้งหมด, controllers 18 ไฟล์, views, templates)
+- Task 17-a (Explore agent): feature inventory — controllers 373 functions (206 REST), S3 framework 111,195 LOC (REST multi-format html/json/xml/csv/xls/pdf/geojson/shp/xform, AAA 8,726 LOC, 48 widgets, import/export/pivot/dashboards, S3Msg 11 channels, S3Sync, S3GIS, ODK/XForms), templates default เปิด gis/pr/org/hrm/cms/doc/msg + ปิด event/cap/survey/project/req/inv/asset/vol, cron scheduler + GSM modem thread, languages 48 ไฟล์ (th 6,603 บรรทัด)
+- Task 17-b (Explore agent): data model inventory — **299 ตารางจริง** (pr 49/org 51/hrm 53/gis 42/msg 37/setup 21/cms 14/sync 9/auth 8/doc 6/s3 4/sit 3/translate 2) + meta fields กลาง 13 ตัวทุกตาราง (uuid/mci/deleted/deleted_fk/deleted_rb/created_on-by/modified_on-by/approved_by/owned_by_user-group/realm_entity) + super-entities 6 ตระกูล (pr_pentity/org_site/doc_entity/msg_channel-message/sit_trackable-situation/gis_layer_entity) + component pattern + gis_location L0-L5 hierarchy + field-level Tier-1 ครบ
+- เขียน docs/ARCHITECTURE-COMPARISON.md (~350 บรรทัด): exec summary, แผนภาพ mermaid 2 ฝั่ง, layer-by-layer 16 ชั้น, module completeness matrix 18 domains (ครบ 5 / บางส่วน 8 / ไม่มี 4 / ไม่จำเป็น 1 — ใหม่ทำเพิ่ม 3 อย่าง: inventory/requests/AI), data granularity audit (299 vs 15 tables, meta 13 vs 2), field-level เทียบ 9 entity หลัก, gap analysis G1-G10, action plan P1/P2/P3 + สิ่งที่ไม่ควรทำตาม, scorecard
+- ข้อค้นพบเชิงกลยุทธ์: (1) SITREP ของ Eden แท้จริงคือ cms_post — ใหม่แยกตาราง IncidentReport ตรงงานกว่า; (2) eden-core ไม่มี inv/req/asset (อยู่ใน Eden เต็ม) — ใหม่ทำ inventory/requests ถือว่าเพิ่มเหนือ eden-core; (3) 4 กลไกสำคัญที่ใหม่ยังไม่มี: accountability (login+audit ครบ), soft-delete/uuid/ownership, presence trail ของผู้สูญหาย, stock/occupancy movement ledger
+- อัปเดต README (ลิงก์เอกสาร) → commit + push ขึ้น github.com/sungkomp-ai/eden-dms
+
+Stage Summary:
+- เอกสารตรวจสอบฉบับสมบูรณ์อยู่ที่ docs/ARCHITECTURE-COMPARISON.md (อ้างอิง source จริงทั้งสองฝั่ง + แผนภาพ + matrix + field-level + action plan ลำดับคุ้มค่า)
+- ให้ทิศทางยกระดับชัดเจน: P1 = meta fields กลาง + login + audit ครบ + Person DOB/contacts + OccupancyLog/StockMovement; P2 = Alert pipeline จริง + ไฟล์แนบ + GIS polygon + export; P3 = กลุ่มคน/training/i18n/ODK/sync — พร้อมสิ่งที่แนะนำ "ไม่ต้องทำตามต้นฉบับ" (super-entity polymorphic, 21 layer types, 11 channels, setup wizard)
