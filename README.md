@@ -108,5 +108,5 @@ bun run dev
 
 - ข้อมูลทั้งหมดในระบบเป็น **ข้อมูลจำลอง (mock data) เพื่อการสาธิต** — อ้างอิงบริบทเหตุการณ์อุทกภัยฤดูน้ำหลาก ก.ย.–ต.ค. 2569
 - พัฒนาโดยการศึกษาสถาปัตยกรรมและโมดูลของ Sahana Eden (eden-core) แล้วออกแบบใหม่ทั้งหมดบนเทคโนโลยีสมัยใหม่
-- **เอกสารเปรียบเทียบสถาปัตยกรรมฉบับละเอียด (eden-core vs EDEN DMS)** — module completeness + data granularity audit + action plan: [`docs/ARCHITECTURE-COMPARISON.md`](docs/ARCHITECTURE-COMPARISON.md)
+- **เอกสารเปรียบเทียบสถาปัตยกรรมฉบับละเอียด (eden-core vs EDEN DMS, ฉบับ 1.1)** — module completeness + data granularity audit + แผนที่ความสัมพันธ์ 9 Entity หลัก (R1–R14) + Gap Analysis G1–G10 พร้อมเกณฑ์ปิด + Action Plan พร้อมประมาณความพยายาม (person-day) + Scorecard ต่อโดเมน/มิติ: [`docs/ARCHITECTURE-COMPARISON.md`](docs/ARCHITECTURE-COMPARISON.md)
 - บันทึกการพัฒนารายเฟสทั้งหมดอยู่ที่ `worklog.md`

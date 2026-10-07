@@ -470,3 +470,22 @@ Work Log:
 Stage Summary:
 - เอกสารตรวจสอบฉบับสมบูรณ์อยู่ที่ docs/ARCHITECTURE-COMPARISON.md (อ้างอิง source จริงทั้งสองฝั่ง + แผนภาพ + matrix + field-level + action plan ลำดับคุ้มค่า)
 - ให้ทิศทางยกระดับชัดเจน: P1 = meta fields กลาง + login + audit ครบ + Person DOB/contacts + OccupancyLog/StockMovement; P2 = Alert pipeline จริง + ไฟล์แนบ + GIS polygon + export; P3 = กลุ่มคน/training/i18n/ODK/sync — พร้อมสิ่งที่แนะนำ "ไม่ต้องทำตามต้นฉบับ" (super-entity polymorphic, 21 layer types, 11 channels, setup wizard)
+
+---
+Task ID: 17.1 (เสริมความลึกเอกสารเปรียบเทียบ)
+Agent: main (Z.ai Code)
+Task: ปรับเพิ่มรายละเอียดเอกสารเปรียบเทียบ — ความสัมพันธ์ระหว่าง Entity หลัก 9 ตัว (Person/Org/HR/Shelter/Inventory/Incident/Alert/Location/Auth), Gap Analysis G1–G10 แบบรายช่องว่าง, Action Plan พร้อมประมาณความพยายาม (person-day), และ Scorecard สรุป
+
+Work Log:
+- อ่าน worklog.md (กู้คืนผล subagent 17-a/17-b) + อ่าน prisma/schema.prisma ครบ 15 models เพื่อระบุเส้นเชื่อมจริงฝั่งใหม่
+- ยืนยัน field ความสัมพันธ์จริงจาก source Eden ด้วย grep เชิงเป้าหมาย: hrm_human_resource.person_id/organisation_id + super_link("site_id","org_site") 4 จุดใน hrm.py, auth_user.pe_id/organisation_id/site_id ใน s3aaa.py, super_link("pe_id","pr_pentity") ใน msg.py, series_id/gis_location_id/priority ใน cms.py, trackable_table/trackable_id/direction/speed/accuracy ใน sit.py, super_entity/instance_type ใน pr.py
+- แทรก §6.4 "แผนที่ความสัมพันธ์ระหว่าง Entity หลัก" ลงเอกสาร: mermaid erDiagram 2 ฝั่ง (Eden: 3 hub = pr_pentity/org_site/gis_location, 21 เส้น; DMS: 11 เส้น FK) + ตารางเทียบเส้นเชื่อมรายคู่ 14 เส้น (R1–R14) ระบุ field จริงทั้งสองระบบ + ข้อสังเคราะห์ 3 ข้อ (เส้นที่ขาดและกระทบ workflow = R4/R5/R8/R10/R12/R14 → เป็นต้นทาง G1–G4; เส้นที่ใหม่ทำดีกว่า = หลักฐานไม่ต้องถอยไป super-entity)
+- ขยาย §7 Gap Analysis G1–G10 จากตารางสรุปเป็นรายช่องว่าง 10 บล็อก แต่ละบล็อกมี: สถานการณ์จริง / ต้นตอเชิงสถาปัตยกรรม / เส้นเชื่อมเกี่ยวข้อง (R1–R14) / ปิดด้วยงานไหนใน §8 / เกณฑ์ปิด
+- สร้าง §8 Action Plan ฉบับประมาณการ: หน่วย PD นิยามชัด (dev full-stack คุ้น Next.js/Prisma, รวม schema+API+UI+ทดสอบ) — P1 5 งานพร้อมงานย่อยรายชิ้น (รวม 17.5–22 PD), P2 5 งาน (19–27 PD), P3 8 กลุ่ม (42–50 PD) + ตาราง dependency (1.1→1.2→1.3, 1.4 ∥ 1.5) + รวม P1+P2 ≈ 37–49 PD (~2 เดือน 1 dev / 3–4 สัปดาห์ 2 dev)
+- สร้าง §9 Scorecard 2 ชั้น: 9.1 ต่อ Entity 9 โดเมน (eden-core / DMS ปัจจุบัน / หลัง P1 / หลัง P1+P2 / ช่องว่างหลัก) + 9.2 ต่อมิติ 6 มิติพร้อมเฉลี่ยรวม (Eden 3.92 / DMS 3.50 / หลัง P1 4.25 / หลัง P1+P2 4.58) + การอ่านเชิงกลยุทธ์: ลงทุน P1 ~20 PD พอเกินต้นฉบับเฉลี่ย, ทำ P2 ต่อชนะทุกมิติยกเว้นขยาย/บูรณาการ
+- อัปเดตหัวเอกสาร (บรรทัด ฉบับ 1.1) + ภาคผนวก (แหล่งยืนยันความสัมพันธ์ + หลักคิดประมาณการ PD) + README คำอธิบายลิงก์เอกสาร
+- เอกสารโต 382 → 559 บรรทัด
+
+Stage Summary:
+- docs/ARCHITECTURE-COMPARISON.md ครบ 4 ส่วนที่ผู้ใช้ขอ: (1) ความสัมพันธ์ 9 entity แบบ ER + R1–R14 อ้าง field จริงจาก source ทั้งสองฝั่ง (2) G1–G10 รายช่องว่างพร้อมเกณฑ์ปิด (3) Action Plan พร้อม PD รายงานย่อย (4) Scorecard ต่อโดเมน + ต่อมิติพร้อม projection
+- ข้อค้นพบใหม่จากมุมความสัมพันธ์: HR ไม่ผูก Person (R4), User ไม่ผูกอะไรเลย (R5/R14), Org ผูก Warehouse แต่ไม่ผูก Shelter (R8 ไม่สม่ำเสมอ), Person/AidRequest/HR ไม่มี FK กับ Location — ทั้งหมดถูกแปลงเป็นงาน P1 แล้ว

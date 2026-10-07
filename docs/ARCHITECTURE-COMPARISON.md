@@ -4,6 +4,8 @@
 >
 > เอกสารนี้อ้างอิง **source จริงทั้งสองฝั่ง**: eden-core `VERSION nursix-dev-5066-g6620ed10d` (2021-08-28) จากไฟล์ที่อัปโหลด (แตกไฟล์ที่ `upload/eden-core-full/eden-core-master/`) และโค้ด EDEN DMS ใน repo นี้ (`prisma/schema.prisma`, `src/`)
 > บันทึกการสำรวจอยู่ใน `worklog.md` Task 17-a / 17-b
+>
+> **ฉบับ 1.1 (เสริมความลึก):** เพิ่ม §6.4 แผนที่ความสัมพันธ์ระหว่าง Entity หลัก 9 ตัว (Person/Org/HR/Shelter/Inventory/Incident/Alert/Location/Auth), ขยาย Gap Analysis G1–G10 เป็นรายช่องว่างพร้อมเกณฑ์ปิด, เพิ่มประมาณความพยายาม (person-day) ใน Action Plan §8, และ Scorecard §9 แยกต่อโดเมนพร้อม projection หลัง P1 / P1+P2
 
 ---
 
@@ -303,52 +305,206 @@ flowchart TB
 | Consent (GDPR) | auth_consent* 3 ตาราง | ไม่มี | ➖ ตามบริบท PDPA ไทยอาจจำเป็นภายหลัง |
 | Audit | S3Audit อัตโนมัติทุกตาราง | AuditLog ที่ API เรียกเอง | ⚠️ P1 |
 
+### 6.4 แผนที่ความสัมพันธ์ระหว่าง Entity หลัก (Person / Org / HR / Shelter / Inventory / Incident / Alert / Location / Auth)
+
+เพิ่มเติมจากการเทียบ "ต่อตาราง" ใน §6.3 — คุณค่าเชิงระบบอยู่ที่ **เส้นเชื่อมระหว่าง entity** ซึ่งเป็นตัวกำหนดว่า workflow จริง (รับแจ้งสูญหาย → ค้นพบ → ย้ายเข้าพักพิง → เบิกของจากคลัง → รายงาน/แจ้งเตือน) จะเดินต่อเนื่องได้แค่ไหน
+
+#### 6.4.1 Eden — เชื่อมผ่าน Super-entity hub (สกัดจาก field จริงใน modules/s3db + modules/s3/s3aaa.py)
+
+```mermaid
+erDiagram
+    pr_pentity ||--o{ pr_person : instance_type
+    pr_pentity ||--o{ org_organisation : instance_type
+    pr_pentity ||--o{ pr_group : instance_type
+    pr_pentity ||--o{ pr_contact : pe_id
+    pr_pentity ||--o{ pr_address : pe_id
+    pr_pentity ||--o{ pr_identity : pe_id
+    pr_pentity ||--o{ pr_image : pe_id
+    pr_pentity ||--o{ pr_presence : pe_id
+    pr_pentity ||--o{ msg_outbox : pe_id
+    auth_user }o--|| pr_pentity : pe_id
+    auth_user }o--|| org_organisation : organisation_id
+    auth_user }o--|| org_site : site_id
+    hrm_human_resource }o--|| pr_person : person_id
+    hrm_human_resource }o--|| org_organisation : organisation_id
+    hrm_human_resource }o--|| org_site : site_id
+    org_site }o--|| org_organisation : organisation_id
+    org_site }o--|| gis_location : location_id
+    gis_location ||--o{ gis_location : parent_L0_L5
+    cms_post }o--|| gis_location : location_id
+    sit_presence }o--|| gis_location : location_id
+    sit_presence }o--|| pr_person : trackable
+```
+
+กลไกที่ต้องเข้าใจก่อนตัดสิน:
+
+- **pr_pentity = hub ที่ 1** ("entity ที่ติดต่อได้" ทุกชนิด): person/org/group เป็น instance โดยมี `instance_type` แยกชนิด → component กลาง (contact/address/identity/image/presence) และ `msg_outbox` อ้างผู้รับ "ใครก็ได้" ด้วย FK เดียว (`pe_id` — ยืนยันจาก `super_link("pe_id", "pr_pentity")` ใน s3db/msg.py)
+- **org_site = hub ที่ 2** ("สถานที่ปฏิบัติงาน"): office/facility/(shelter/warehouse เมื่อเปิดโมดูล) ล้วนเป็น instance → `site_id` ตัวเดียวใช้ผูกทั้ง hrm/auth/inv (ยืนยัน `super_link("site_id", "org_site")` ใน s3db/hrm.py 4 จุด)
+- **sit_presence** ผูกแบบ polymorphic (`trackable_table` + `trackable_id`) → เก็บ trail การพบตัว + GPS (direction/speed/accuracy) ของ person หรือ human_resource
+- **gis_location = hub ที่ 3 เชิงพื้นที่**: self-ref `parent` (L0–L5) และถูกอ้างจากทุก entity ที่มีที่ตั้ง (address, site, cms_post, presence)
+- **auth_user ผูกครบ 3 ฝั่ง**: `pe_id` (ตัวตนคนจริง) + `organisation_id` (หน่วยงาน) + `site_id` (ฐานปฏิบัติงาน) — ทำ record-level scope ได้ตั้งแต่โครงสร้าง
+
+#### 6.4.2 EDEN DMS — FK ตรงแบบ relational (สกัดจาก prisma/schema.prisma)
+
+```mermaid
+erDiagram
+    Location ||--o{ Location : parentId
+    Location ||--o{ Incident : locationId
+    Location ||--o{ Shelter : locationId
+    Incident ||--o{ IncidentReport : incidentId
+    Incident ||--o{ Person : incidentId
+    Incident ||--o{ AidRequest : incidentId
+    Incident ||--o{ Alert : incidentId
+    Shelter ||--o{ Person : shelterId
+    Organization ||--o{ HumanResource : organizationId
+    Organization ||--o{ Warehouse : organizationId
+    Warehouse ||--o{ InventoryItem : warehouseId
+```
+
+> สังเกต 2 จุด: (1) Person/AidRequest/HumanResource **ไม่มีเส้นเชื่อมกับ Location เชิง FK** (ใช้ string: `address` / `locationName` / `baseLocation`) (2) **User ไม่มีเส้นเชื่อมกับสิ่งใดเลย** — ไม่ผูก Person/Org/Shelter
+
+#### 6.4.3 เทียบเส้นเชื่อมรายคู่ 14 เส้น (R1–R14)
+
+| # | เส้นเชื่อม | Eden (กลไกจริง + field ใน source) | EDEN DMS | ประเมิน |
+|---|---|---|---|---|
+| R1 | Person ↔ Location | `pr_address.location_id` (หลายที่อยู่ต่อคน) + `pr_presence.location_id` (ที่พบ) | `Person.address` และ `lastSeenLocation` เป็น string | ⚠️ กรอง/ค้นตามพื้นที่เชิงภูมิศาสตร์ไม่ได้ |
+| R2 | Person ↔ Incident | ผ่าน presence/trackable (Eden เต็มผูก event) | `incidentId` FK ตรง | ✅ ใหม่ตรงงานกว่า |
+| R3 | Person ↔ Shelter | Eden เต็ม: `cr_shelter_occupancy` (log เข้า-ออก) | `shelterId` FK จุดเดียว (ไม่มีประวัติ) | ⚠️ ชัดแต่ตื้น — ดู G4 |
+| R4 | Person ↔ HR | `hrm_human_resource.person_id` | ไม่มี — `HumanResource.name` เป็น string อิสระ | ❌ คนเดียวถูกกรอกซ้ำเป็น 2 ข้อมูลได้ |
+| R5 | Person ↔ Auth | `auth_user.pe_id` (บัญชีผูกคนจริง) | ไม่มี — `User` ไม่ผูก Person | ❌ ไม่รู้ใครบันทึกข้อมูลใคร (แกนของ G1) |
+| R6 | HR ↔ Org | `hrm_human_resource.organisation_id` (default root_org) | `organizationId` FK | ✅ เทียบเท่า |
+| R7 | HR ↔ สถานที่ปฏิบัติงาน | `hrm_human_resource.site_id` → org_site (site ใดก็ได้) | `baseLocation` string | ⚠️ กรองตามฐานปฏิบัติงานไม่ได้ |
+| R8 | Org ↔ Shelter | ผ่าน `org_site.organisation_id` (Eden เต็ม) | ไม่มี — `Shelter.contactPerson` string (ขณะที่ Warehouse ผูก organizationId แล้ว — ไม่สม่ำเสมอ) | ⚠️ |
+| R9 | Org ↔ Warehouse/สต๊อก | org_site (inv_warehouse) + `inv_inv_item.site_id` (Eden เต็ม) | `organizationId` FK + `items[]` | ✅ เทียบเท่า |
+| R10 | Shelter ↔ Inventory | `inv_send`/`inv_recv` — ledger รับ-จ่าย-โอนระหว่าง site (Eden เต็ม) | ไม่มีทั้งสองฝั่ง | ❌ เบิกของเข้าพักพิงไม่มีต้นทาง-ปลายทาง (ดู G4) |
+| R11 | Incident ↔ Alert/Request | (Eden เต็ม: event_incident_type) | `aidRequests[]` + `alerts[]` FK ตรง | ✅ ใหม่ชัดกว่า |
+| R12 | Alert ↔ ผู้รับ | `msg_outbox.pe_id` **รายคน** + status Unsent/Sent/Failed + retries | `audience` เป็น enum กลุ่มเดียว (all/area/volunteers/officers) | ❌ ไม่มีรายผู้รับ — "ส่งแล้ว" พิสูจน์ไม่ได้ |
+| R13 | Incident ↔ Location | gis_location + **wkt polygon/bbox** | `locationId` + lat/lng จุดเดียว + `locationName` string | ⚠️ เขตน้ำท่วม/เขตอพยพเป็น polygon ไม่ได้ (G7) |
+| R14 | Auth ↔ Org/Site | `auth_user.organisation_id` + `site_id` | ไม่มี | ❌ จำกัดขอบเขตข้อมูลต่อหน่วยงาน (scope) ไม่ได้ |
+
+**ข้อสังเคราะห์ 3 ข้อ:**
+
+1. Eden สร้างเส้นเชื่อมใหม่ได้โดยไม่แก้ตารางเดิม (พึ่ง 2–3 hub กลาง) — DMS ต้อง migration ทุกครั้งที่เพิ่มเส้น แต่อ่าน/สอน/debug ง่ายกว่าอย่างชัดเจน
+2. เส้นที่ DMS **ขาดและกระทบ workflow จริง** = R4, R5, R8, R10, R12, R14 → เป็นต้นทางของ Gap G1–G4 และงาน P1 ทั้งหมดใน §8
+3. เส้นที่ใหม่ทำได้ดีหรือเทียบเท่า (R2, R6, R9, R11) = **หลักฐานว่าไม่ต้องถอยไปทำ super-entity** — ใช้ FK ตรงต่อไป
+
 ---
 
-## 7. ช่องว่างเชิงสถาปัตยกรรมที่กระทบการใช้งานจริง (Gap Analysis)
+## 7. ช่องว่างเชิงสถาปัตยกรรมที่กระทบการใช้งานจริง (Gap Analysis G1–G10)
 
-จัดกลุ่มตามผลกระทบต่อภารกิจจัดการภัยพิบัติ (ไม่ใช่แค่ความต่างเชิงเทคนิค):
+แต่ละช่องว่างระบุ: สถานการณ์ที่เจอจริง / ต้นตอเชิงสถาปัตยกรรม / เส้นเชื่อมที่เกี่ยวข้อง (อ้าง R1–R14 จาก §6.4.3) / วิธีปิด (อ้างงานใน §8) และเกณฑ์ว่าถือว่า "ปิดแล้ว" เมื่ออะไร
 
-| # | ช่องว่าง | ผลกระทบเชิงภารกิจ | ระดับ |
+#### G1 — ไม่มี accountability รอบข้อมูล 🔴 P1
+- **สถานการณ์จริง:** กรรมการถามว่า "ใครกรอกสถานะผู้สูญหายว่าพบตัว / ใครอนุมัติคำขอ" — ระบบตอบไม่ได้ เพราะไม่มีบัญชีผู้ใช้จริงและไม่มีบันทึกผู้ทำรายการ
+- **ต้นตอเชิงสถาปัตยกรรม:** ไม่มี login + ไม่มี createdBy/updatedBy + AuditLog บันทึกเฉพาะจุดที่ API เขียนเอง (ไม่ครบทุก mutation)
+- **เส้นเชื่อมเกี่ยวข้อง:** R5 (Person↔Auth), R14 (Auth↔Org/Site)
+- **ปิดด้วย:** งาน 1.1 + 1.2 + 1.3 — **เกณฑ์ปิด:** ทุก mutation มี createdBy/updatedBy, AuditLog เขียนอัตโนมัติครบ, เรียก API ใดก็ต้อง login
+
+#### G2 — ไม่มี soft-delete / uuid / ownership 🔴 P1
+- **สถานการณ์จริง:** เจ้าหน้าที่ลบ Person ผิดคน (ชื่อซ้ำกัน) ข้อมูลหายถาวรทันที; เมื่อจะแลกข้อมูลกับหน่วยงานอื่นในอนาคต sync ไม่ได้เพราะไม่มี id กลาง
+- **ต้นตอเชิงสถาปัตยกรรม:** ไม่มี meta fields กลางแบบ Eden ที่มีทุกตาราง (deleted, uuid, owned_by_user/owned_by_group, realm_entity — 13 ตัว)
+- **เส้นเชื่อมเกี่ยวข้อง:** ทุกเส้น (เป็นโครงสร้างรองรับ)
+- **ปิดด้วย:** งาน 1.1 (ส่วน ownership ตามมากับ 1.2) — **เกณฑ์ปิด:** DELETE = soft-delete (API filter `deleted=true` เสมอ), ทุกแถวมี uuid, มีตารางร่องรอยการลบ
+
+#### G3 — Person แบนเกินไปสำหรับงานสูญหาย 🔴 P1
+- **สถานการณ์จริง:** พิสูจน์ตัวตนว่า "บิดามารดาชื่ออะไร อายุเท่าไหร่ บัตรเลขไหน" และดูประวัติการพบตัว 3 ครั้งล่าสุดของผู้สูญหาย — ทำไม่ได้; ค้นครอบครัวเป็นชุดไม่ได้; ติดต่อครอบครัวได้ทางเดียว (phone ตัวเดียว)
+- **ต้นตอเชิงสถาปัตยกรรม:** Person เป็นแบน 16 fields แทนโครงสร้าง Person + components แบบ Eden (pr_identity / pr_contact หลายรายการ / pr_presence เป็น trail / pr_group ครอบครัว) และเก็บ `age` เป็นตัวเลขตายตัวแทน `date_of_birth`
+- **เส้นเชื่อมเกี่ยวข้อง:** R1 (Person↔Location เป็น string)
+- **ปิดด้วย:** งาน 1.4 — **เกณฑ์ปิด:** DOB เป็นวันที่, ติดต่อได้หลายช่องทางพร้อมลำดับความสำคัญ, เห็น timeline การพบตัวรายคน (สถานะ+เวลา+ที่+ผู้สังเกต)
+
+#### G4 — ไม่มีประวัติ movement (occupancy + stock) 🔴 P1
+- **สถานการณ์จริง:** เช้า currentOccupancy=320 บ่ายเหลือ 305 — ใครย้ายเข้า/ย้ายออกทำไม; จ่ายน้ำดื่ม 1,000 ขวดจากคลังไหน ใครเบิก ไปที่ไหน — ตอบไม่ได้ ตรวจของหายไม่ได้
+- **ต้นตอเชิงสถาปัตยกรรม:** ใช้ตัวเลขปัจจุบันเขียนทับ (`currentOccupancy`, `InventoryItem.quantity`) แทน ledger/log แบบ Eden (cr_shelter_occupancy, inv_send/inv_recv — และสังเกตว่า Eden เต็มก็ใช้ ledger เหมือนกัน ไม่ใช่แก้ตัวเลขตรง)
+- **เส้นเชื่อมเกี่ยวข้อง:** R3 (Person↔Shelter), R10 (Shelter↔Inventory — เส้นที่ **ทั้งสองระบบไม่มีให้คลิกต่อกันใน UI** แต่ Eden มีหลักฐานธุรกรรมในตาราง)
+- **ปิดด้วย:** งาน 1.5 — **เกณฑ์ปิด:** ทุกการเข้า/ออกพักพิงและทุกการรับ/จ่าย/โอน/ปรับสต๊อกมีแถว log พร้อมผู้บันทึก + ตัวเลขปัจจุบัน derive จาก log
+
+#### G5 — Alert ไม่ส่งจริง 🟠 P2
+- **สถานการณ์จริง:** ตั้ง alert "น้ำท่วมวัด X ขอให้อพยพ" สถานะเปลี่ยนเป็น sent แต่ไม่มีอะไรถูกส่งออกไปไหน — ผู้ใช้เข้าใจว่าแจ้งแล้ว = **ความเสี่ยงชีวิต**
+- **ต้นตอเชิงสถาปัตยกรรม:** Alert เป็น record 1 ทิศทาง ไม่มี outbox รายผู้รับ ไม่มีช่องทางจริง ไม่มี retry (Eden: `msg_outbox` ต่อผู้รับพร้อม status Unsent/Sent/Failed + retries + ส่งผ่าน GSM modem/SMTP/Twilio จริง)
+- **เส้นเชื่อมเกี่ยวข้อง:** R12 (Alert↔ผู้รับ)
+- **ปิดด้วย:** งาน 2.1 — **เกณฑ์ปิด:** สร้าง alert → ระบบสร้าง outbox รายผู้รับ → ส่ง email/Line จริง → เห็น sentAt/failed/retries ต่อราย
+
+#### G6 — ไม่มีไฟล์แนบ 🟠 P2
+- **สถานการณ์จริง:** รายงานเหตุการณ์ต้องแนบรูปน้ำท่วม, คำขอควรแนบหนังสือราชการ, ผู้สูญหายควรมีรูปให้ทีมค้นหาใช้
+- **ต้นตอเชิงสถาปัตยกรรม:** ไม่มี model Document (Eden: `doc_entity`/`doc_document` — แนบกับ entity ใดก็ได้ + bulk photo upload)
+- **เส้นเชื่อมเกี่ยวข้อง:** Incident/IncidentReport/Person/AidRequest ทั้งหมด
+- **ปิดด้วย:** งาน 2.2 — **เกณฑ์ปิด:** แนบไฟล์ที่ incident/person/sitrep/request ได้ + เปิดดูจากหน้ารายละเอียด + รู้ว่าใครอัปโหลด
+
+#### G7 — GIS จุดเท่านั้น + ไม่มี geocode 🟠 P2
+- **สถานการณ์จริง:** เขตน้ำท่วม/เขตอพยพเป็น "พื้นที่" (polygon) แต่ระบบเก็บ lat/lng จุดเดียว; กรอก "ต.บางพูด อ.ปากเกร็ด" ต้องหาพิกัดเองจากแผนที่ในเว็บอื่น
+- **ต้นตอเชิงสถาปัตยกรรม:** Location/Incident ไม่มี geometry แบบ area (Eden gis_location มี `wkt` polygon/line + bbox + radius + geocode ในตัวผ่าน geopy)
+- **เส้นเชื่อมเกี่ยวข้อง:** R13 (Incident↔Location), R1 (Person↔Location)
+- **ปิดด้วย:** งาน 2.3 — **เกณฑ์ปิด:** วาด/นำเข้าเขตพื้นที่แสดงบนแผนที่ได้ + พิมพ์ชื่อพื้นที่ในฟอร์มแล้วได้พิกัดอัตโนมัติ
+
+#### G8 — ไม่มี export / pivot 🟠 P2
+- **สถานการณ์จริง:** ประชุม ECC ต้องส่งตารางผู้ประสบภัย/สต๊อกเป็นไฟล์ Excel ให้ต่อเนื่องประเทศทุกวัน — ต้อง copy จากหน้าจอมือ
+- **ต้นตอเชิงสถาปัตยกรรม:** API คืน JSON เท่านั้น (Eden S3Request คืน resource เดียวเป็น html/json/xml/csv/xls/pdf/geojson/shp ได้ทันที)
+- **เส้นเชื่อมเกี่ยวข้อง:** ทุกโมดูล
+- **ปิดด้วย:** งาน 2.4 — **เกณฑ์ปิด:** ปุ่ม export CSV/XLS ทุกตารางหลัก + PDF รายงานเหตุการณ์
+
+#### G9 — Catalog เป็น free string 🟡 P2–P3
+- **สถานการณ์จริง:** กรอก sector ทั้ง "สาธารณสุข"/"Public Health"/"health" ปนกัน — สถิติ/กรอง/รายงานไม่แน่น ข้อมูลเขียนไม่ตรงกัน
+- **ต้นตอเชิงสถาปัตยกรรม:** ใช้ free string แทนตาราง catalog + M2M แบบ Eden (`org_organisation_type`, `org_sector`+subsector, `hrm_skill_type`) — องค์กรหนึ่งแห่งในจริงมีได้หลายบทบาท
+- **เส้นเชื่อมเกี่ยวข้อง:** R6 (HR↔Org), R7, R8 (Org↔Shelter), R9
+- **ปิดด้วย:** งาน 2.5 (+P3 skill catalog) — **เกณฑ์ปิด:** เลือกจากรายการมาตรฐานเท่านั้น + Shelter มี organizationId ครบ
+
+#### G10 — ไม่มี i18n / ODK / sync / consent 🟡 P3
+- **สถานการณ์จริง:** ขยายผู้ใช้ต่างชาติ / เจ้าหน้าที่ภาคสนามใช้ ODK Collect / แลกข้อมูลข้ามหน่วยงาน / ความต้องการตาม PDPA — ยังเดินไม่ได้ทั้ง 4 อย่าง
+- **ต้นตอเชิงสถาปัตยกรรม:** ยังไม่ใช่ความต้องการรอบปัจจุบัน (Eden มีทั้ง 4 ส่วน: T() 48 ภาษา, xforms/OpenRosa, S3Sync dataset/uuid, auth_consent 3 ตาราง)
+- **เส้นเชื่อมเกี่ยวข้อง:** ข้ามโดเมน
+- **ปิดด้วย:** P3 backlog (ตัวเลขใน §8.3) — ทำงาน 1.1 (uuid) ก่อนจะทำให้ sync ในอนาคตถูกที่สุด
+- **เกณฑ์ปิด:** แยกเป็นโครงการย่อยเมื่อบริบทเปิด
+
+---
+
+## 8. ข้อเสนอแนะเพื่อยกระดับการออกแบบ (Action Plan พร้อมประมาณความพยายาม)
+
+> หน่วยประมาณการ: **PD (person-day)** = นักพัฒนา full-stack ที่คุ้นเคย Next.js/Prisma ทำงานวันละ 1 วันเต็ม — รวม schema + API + UI + ทดสอบพื้นฐานของงานนั้นแล้วเสร็จภายในตัวเอง (ไม่รวม QA หลายอุปกรณ์/UAT) กรอบบน–กรอบล่างคิดจากความแน่นอนของ UX และจำนวน route ที่ต้อง retrofit
+
+### 8.1 P1 — โครงสร้างพื้นฐานความน่าเชื่อถือ (รวม ~17.5–22 PD — ทำก่อน)
+
+| งาน | สิ่งที่ทำ | งานย่อย | ประมาณการ | ปิด Gap |
+|---|---|---|---|---|
+| 1.1 Meta fields กลาง | เพิ่มทุก model: `deleted Boolean` (soft-delete ที่ API filter เอง), `uuid String @unique @default(uuid())`, `createdBy/updatedBy String?` + helper `withMeta()` | schema 0.5 / helper 0.5 / retrofit API 17 กลุ่ม 1.5 / seed+regression 0.5 | **3–4 PD** | G2 |
+| 1.2 Login จริง | NextAuth (credentials พอ) + middleware บังคับ login ทุก route + หน้า login + ผูก createdBy อัตโนมัติ + หน้า admin จัดการ user เดิมต่อยอด | config+page 1.5 / middleware+session 0.5 / UI admin 1 / ทดสอบ role 0.5 | **4–5 PD** | G1 |
+| 1.3 Audit ครบทุก mutation | helper `withAudit()` ครอบ POST/PUT/DELETE ทุก route (บันทึก action/module/detail/user อัตโนมัติ) | route group ละ 0.15 ประมาณ | **2–3 PD** | G1 |
+| 1.4 Person ลึกขึ้น | เปลี่ยน `age` → `dateOfBirth` + `PersonContact {type, value, priority}` + `emergencyContact` + `PersonEvent {status, at, location, observer}` (presence trail) + timeline UI ในหน้า person | schema+API 1.5 / form+table+timeline 1.5 / migrate seed 0.5 | **3.5–4.5 PD** | G3 |
+| 1.5 Movement ledger | `ShelterOccupancy {shelterId, count, delta, at, note, by}` + `StockMovement {itemId, type: receive/issue/transfer/adjust, qty, fromWarehouseId?, toWarehouseId?, ref, at, by}` + หน้าบันทึกเข้า-ออก + เบิก-จ่าย-โอน + ผูก low-stock alert กับ ledger | schema+API 2 / UI 2.5 / ผูก alert ต่ำสุด 0.5 | **5–6 PD** | G4 |
+| **รวม P1** | | | **~17.5–22 PD** | G1–G4 |
+
+### 8.2 P2 — ความสามารถเชิงปฏิบัติการ (รวม ~19–27 PD)
+
+| งาน | สิ่งที่ทำ | ประมาณการ | ปิด Gap |
 |---|---|---|---|
-| G1 | **ไม่มี accountability** (login จริง + created_by/updated_by + audit ครบทุก mutation) | ข้อมูลผู้ประสบภัย/การตัดสินใจจัดสรรไม่มีใครรับผิดชอบตามร่องรอย — ตรวจสอบภายใน/ภายนอกไม่ได้ | 🔴 P1 |
-| G2 | **ไม่มี soft-delete/uuid/ownership** | ลบผิดแล้วข้อมูลหายถาวร; เตรียมสิทธิ์ระดับ record และ sync อนาคตไม่ได้ | 🔴 P1 |
-| G3 | **Person แบนเกินไปสำหรับงานสูญหาย** (ไม่มี presence trail, ครอบครัว/กลุ่ม, หลายช่องทางติดต่อ, DOB) | งานค้นหา-ตรวจสอบตัวตน-ประสานครอบครัวทำได้ตื้น | 🔴 P1 |
-| G4 | **ไม่มีประวัติ movement** (shelter occupancy log, inventory ledger) | ตัวเลขปัจจุบันถูกเขียนทับ — ตรวจสอบย้อนหลัง/ทำบัญชีสิ่งของไม่ได้ | 🔴 P1 |
-| G5 | **Alert ไม่ส่งจริง** (ไม่มี outbox/channel/retry/inbox) | ระบบเตือนภัยที่ไม่เตือน = ความเสี่ยงชีวิต; อย่างน้อยต้อง email + Line Notify | 🟠 P2 |
-| G6 | **ไม่มีไฟล์แนบ** (รูปเหตุการณ์, หนังสือราชการ, รูปผู้สูญหาย) | หลักฐาน/ความน่าเชื่อถือของรายงานลดลง | 🟠 P2 |
-| G7 | GIS จุดเท่านั้น (ไม่มี polygon/พื้นที่น้ำท่วม) + ไม่มี geocode | แผนที่เล่าเรื่องพื้นที่ประสบภัยได้ไม่ครบ | 🟠 P2 |
-| G8 | ไม่มี export (CSV/XLS/PDF) และ pivot รายงาน | ส่งต่อหน่วยเหนือ/ประชุมต้อง copy มือ | 🟠 P2 |
-| G9 | Org/HRM catalog เป็น string (type/sector/skill) | สถิติ/กรองมาตรฐานไม่แน่น; ข้อมูลซ้ำซ้อนเขียนไม่ตรงกัน | 🟡 P2–P3 |
-| G10 | ไม่มี i18n framework / ODK / sync / consent | จำกัดขอบเขตการขยายในอนาคต | 🟡 P3 |
+| 2.1 Alert pipeline จริง | `AlertChannel {type: email/line_notify/webhook, config}` + `AlertOutbox {alertId, target, status, retries, sentAt}` + worker (cron route หรือ mini-service) + สร้าง outbox จาก audience อัตโนมัติ | **6–8 PD** | G5 |
+| 2.2 ไฟล์แนบ | `Document {entity, entityId, file, mime, name, uploadedBy}` + upload API + UI แนบใน incident/person/sitrep/request | **4–5 PD** | G6 |
+| 2.3 GIS polygon + geocode | เพิ่ม `area String?` (GeoJSON polygon) ให้ Incident/Location + วาด/แสดงบนแผนที่ + geocode (Nominatim) ในฟอร์ม | **4–6 PD** | G7 |
+| 2.4 Export | `GET /api/<res>?format=csv\|xls` ทุก resource + ปุ่ม export ทุกตาราง + PDF รายงานเหตุการณ์ | **3–5 PD** | G8 |
+| 2.5 Org catalog | `OrganisationType`, `Sector` เป็นตาราง (หรือเริ่มที่ enum validation) + `organizationId` ให้ Shelter + UI เลือกจาก catalog | **2–3 PD** | G9 |
+| **รวม P2** | | **~19–27 PD** | G5–G9 |
 
----
+### 8.3 P3 — Backlog เชิงลึก (เลือกทำตามบริบท — รวม ~42–50 PD)
 
-## 8. ข้อเสนอแนะเพื่อยกระดับการออกแบบ (Action Plan ตามลำดับความคุ้มค่า)
-
-### P1 — โครงสร้างพื้นฐานความน่าเชื่อถือ (แนะนำทำเป็นอันดับแรก)
-
-| งาน | รายละเอียดการออกแบบ | ความพยายาม |
-|---|---|---|
-| 1.1 Meta fields กลาง | เพิ่มทุก model: `deleted Boolean` (soft-delete ที่ API filter เอง), `uuid String @unique @default(uuid())` (เตรียม sync/exchange), `createdBy/updatedBy String?` | ต่ำ (schema + helper ใน API) |
-| 1.2 Login จริง | NextAuth (credentials พอ) + middleware ผูก createdBy/audit อัตโนมัติ + หน้า admin จัดการ user ที่มีอยู่ต่อยอด | กลาง |
-| 1.3 Audit ครบทุก mutation | helper `withAudit()` ครอบทุก route POST/PUT/DELETE — ไม่ต้องรอ framework | ต่ำ |
-| 1.4 Person: DOB + ตารางลูก | เปลี่ยน `age` → `dateOfBirth`; เพิ่ม `PersonContact {type, value, priority}`; field `emergencyContact`; (optional) `PersonEvent {status, at, location, observer}` เป็น presence trail | กลาง |
-| 1.5 OccupancyLog + StockMovement | `ShelterOccupancy {shelterId, count, at, note}` (currentOccupancy = ค่าล่าสุด); `StockMovement {itemId, type: receive/issue/transfer/adjust, qty, fromWarehouseId?, toWarehouseId?, ref, at, by}` — แทนการแก้ quantity ตรง | กลาง |
-
-### P2 — ความสามารถเชิงปฏิบัติการ
-
-| งาน | รายละเอียด |
+| กลุ่มงาน | ประมาณการ |
 |---|---|
-| 2.1 Alert pipeline | `AlertChannel {type: email/line_notify/webhook, config}` + `AlertOutbox {alertId, target, status, retries, sentAt}` + worker (เช่น cron route หรือ mini-service) ส่งจริง 2 ช่องทางก่อน |
-| 2.2 ไฟล์แนบ | `Document {entity, entityId, file, mime, name, uploadedBy}` + upload API + UI แนบใน incident/person/request/sitrep |
-| 2.3 GIS polygon + geocode | เพิ่ม `area String?` (GeoJSON polygon) ให้ Incident/Location + geocode ผ่าน API ภายนอก (เช่น Nominatim/Google) ในฟอร์ม |
-| 2.4 Export | `GET /api/<res>?format=csv|xls` + ปุ่ม export ในตารางทุกโมดูล + PDF รายงานเหตุการณ์ |
-| 2.5 Org catalog | `OrganisationType`, `Sector` เป็นตาราง + M2M (หรือเริ่มที่ enum validation) + `organizationId` ให้ Shelter/Warehouse ให้ครบ |
+| PersonGroup (ครอบครัว/เคส) + PersonRelation | 4–5 PD |
+| HRM skill/training/certification catalog | 5–6 PD |
+| SITREP priority + expires_on | 1–2 PD |
+| i18n (th/en) | 6–8 PD |
+| ODK/OpenRosa intake | 10–12 PD |
+| Sync ข้ามหน่วยงาน (uuid-based exchange) | 8–10 PD |
+| Pivot report | 5–7 PD |
+| PDPA consent records | 3–4 PD |
 
-### P3 — เชิงลึกและการขยาย
+### 8.4 ลำดับและ dependency
 
-PersonGroup (ครอบครัว/เคส) + PersonRelation; HRM Skill/Training/Certification catalog; SITREP priority/expired; i18n (th/en); ODK integration; S3Sync-like exchange ด้วย uuid; pivot report; PDPA consent; ประเมินใช้ gis_config ต่อผู้ใช้
+1. **1.1 → 1.2 → 1.3** เกาะกัน: meta fields ต้องมี login จึงเติม createdBy ได้ และ audit ต้องรู้ว่าใครทำ
+2. **1.4 และ 1.5** ทำขนานกันได้ (คนละโดเมน) หลัง 1.1 เสร็จ
+3. **2.1** ต้องมี 1.2 (รู้ว่าใครสั่งส่ง) + แนะนำให้มี 1.1 (uuid เก็บร่องรอยรายผู้รับ)
+4. **2.2–2.5** อิสระต่อกัน เลือกตามความเร่งด่วนของภารกิจ
+5. **P3** รอเปิดบริบท — แต่ 1.1 ทำให้ต้นทุน P3 ที่เกี่ยวกับ sync ถูกลง
+
+**รวม P1+P2 ≈ 37–49 PD** (~2 เดือนด้วย dev 1 คนเต็มเวลา หรือ 3–4 สัปดาห์ด้วย 2 คน)
 
 ### สิ่งที่**ไม่แนะนำ**ให้ทำตามต้นฉบับ
 
@@ -361,15 +517,35 @@ PersonGroup (ครอบครัว/เคส) + PersonRelation; HRM Skill/Tra
 
 ## 9. Scorecard สรุป (1–5)
 
-| มิติ | eden-core | EDEN DMS | หมายเหตุ |
-|---|---|---|---|
-| ความครบถ้วน workflow DMS หลัก | 5 | 4 | ใหม่ขาด messaging จริง/ไฟล์แนบ |
-| ความลึกของข้อมูล (granularity) | 5 | 2.5 | 299 vs 15; meta 13 vs 2 |
-| ความง่ายในการใช้งาน (ผู้ใช้ไทย) | 2.5 | 5 | ภาษาไทยแท้ + UX สมัยใหม่ |
-| ความน่าเชื่อถือเชิงระบบ (audit/auth/integrity) | 5 | 2 | ช่องว่าง P1 |
-| ความสามารถขยาย/บูรณาการ | 4.5 | 2.5 | sync/export/ODK/i18n |
-| การบำรุงรักษา/พัฒนาต่อ | 1.5 (web2py legacy) | 5 | TypeScript + Prisma + stack มาตรฐาน |
-| **ความคุ้มค่าโดยรวมสำหรับภารกิจปัจจุบัน** | — | **ชนะชัดเจน** | ทำ P1 แล้วจะ "ใช้งานจริงได้เต็มสูตร" |
+### 9.1 ต่อ Entity หลัก 9 โดเมน (เชื่อมกับ §6.3–6.4 และ Gap G1–G10)
+
+| Entity หลัก | eden-core | DMS ปัจจุบัน | หลัง P1 | หลัง P1+P2 | ช่องว่างหลัก |
+|---|---|---|---|---|---|
+| Person | 5 | 2.5 | 4 | 4.5 | trail พบตัว/หลายช่องทาง/ครอบครัว (G3) |
+| Organization | 4.5 | 2.5 | 2.5 | 4 | catalog M2M + ผูก shelter (G9) |
+| HumanResource | 4.5 | 2 | 2.5 | 2.5 | ไม่ผูก person/catalog (R4 — งาน P3) |
+| Shelter | 4 (Eden เต็ม) | 3 | 4.5 | 4.5 | ledger เข้า-ออก (G4) |
+| Inventory | 4 (Eden เต็ม) | 3 | 4.5 | 4.5 | ledger สต๊อก (G4) |
+| Incident/SITREP | 3.5 | 4 | 4 | 4.5 | polygon + แนบไฟล์ (G6–G7) |
+| Alert/Messaging | 5 | 2 | 2 | 4.5 | pipeline ส่งจริง (G5) |
+| Location/GIS | 5 | 3 | 3 | 4.5 | polygon/geocode (G7) |
+| Auth/Accountability | 5 | 1.5 | 4 | 4.5 | login/audit/ownership (G1–G2) |
+
+> หมายเหตุ: Shelter/Inventory ให้คะแนน eden-core เทียบ Eden เต็ม (ใน eden-core ไม่มีโมดูลนี้เลย) — งาน 1.5 ทำให้ Shelter+Inventory ของ DMS ไปไกลกว่า eden-core ต้นฉบับ และ Alert จะก้าวข้ามต้นฉบับเมื่อทำ 2.1 เพราะเลือกช่องทางที่ใช้จริงในไทย (email/Line) แทน 11 ช่องทางที่ดูแลไม่ไหว
+
+### 9.2 ต่อมิติระบบ 6 มิติ (พร้อม projection)
+
+| มิติ | eden-core | DMS ปัจจุบัน | หลัง P1 | หลัง P1+P2 | หมายเหตุ |
+|---|---|---|---|---|---|
+| ความครบถ้วน workflow DMS หลัก | 5 | 4 | 4.5 | 4.5 | messaging จริง/ไฟล์แนบมาที่ P2 |
+| ความลึกของข้อมูล (granularity) | 5 | 2.5 | 4 | 4.5 | 299 vs 15 ตาราง; meta 13 vs 2; R1–R14 |
+| ความง่ายในการใช้งาน (ผู้ใช้ไทย) | 2.5 | 5 | 5 | 5 | ภาษาไทยแท้ + UX สมัยใหม่ |
+| ความน่าเชื่อถือเชิงระบบ (audit/auth/integrity) | 5 | 2 | 4 | 4.5 | P1 ครบ → 4; ledger+export → 4.5 |
+| ความสามารถขยาย/บูรณาการ | 4.5 | 2.5 | 3 | 4 | export (P2) / sync-ODK-i18n (P3) |
+| การบำรุงรักษา/พัฒนาต่อ | 1.5 (web2py legacy) | 5 | 5 | 5 | TypeScript + Prisma + stack มาตรฐาน |
+| **เฉลี่ยรวม 6 มิติ** | **3.92** | **3.50** | **4.25** | **4.58** | |
+
+**อ่านตัวเลขอย่างเป็นระบบ:** DMS ปัจจุบัน (3.50) ยังตามหลัง Eden เฉลี่ย (3.92) — แพ้เรื่องความลึกข้อมูล/ความน่าเชื่อถือ แต่ชนะ UX/การบำรุงรักษา → **ลงทุน P1 ~17.5–22 PD พอทำให้เกิน (4.25)** และทำ P2 ต่ออีก ~19–27 PD จะได้ 4.58 ซึ่งชนะ Eden ทุกมิติ ยกเว้น "ขยาย/บูรณาการ" ที่ยังตามหลังเล็กน้อย (รอ P3)
 
 ---
 
@@ -378,4 +554,6 @@ PersonGroup (ครอบครัว/เคส) + PersonRelation; HRM Skill/Tra
 - แตกไฟล์ต้นฉบับเต็ม `eden-core-master.zip` (8,022 ไฟล์) → สำรวจ controllers (17 ไฟล์/373 functions), modules/s3 (46 ไฟล์/111,195 LOC), modules/s3db (13 ไฟล์/299 ตาราง/52,674 LOC), models (infrastructure), views (173), languages (48 ไฟล์/ไทย 6,603 บรรทัด), cron/templates
 - สกัด field จาก `define_table(...)` จริงใน s3db + pattern super_link/add_components/s3_meta_fields
 - เทียบกับ `prisma/schema.prisma` (15 models) + API routes (17 กลุ่ม) + โมดูล UI 13 โมดูล ของ repo นี้
+- แผนที่ความสัมพันธ์ (§6.4): ตรวจจาก field จริง — `person_id/organisation_id` ใน s3db/hrm.py, `super_link("site_id", "org_site")` 4 จุดใน hrm.py, `pe_id/organisation_id/site_id` ของ auth_user ใน modules/s3/s3aaa.py, `super_link("pe_id", "pr_pentity")` ใน s3db/msg.py, `series_id/gis_location_id/priority` ใน s3db/cms.py, `trackable_table/trackable_id/direction/speed/accuracy` ใน s3db/sit.py, และ relation ทั้งหมดใน `prisma/schema.prisma` (11 เส้น FK)
+- ประมาณการ PD คิดจาก: จำนวน route ที่ต้อง retrofit (17 กลุ่ม), จำนวน model ใหม่ต่องาน, และขนาด UI ของโมดูลที่เกี่ยวข้องตามที่วัดจากงานที่ผ่านมาใน worklog
 - ข้อจำกัด: eden-core ที่ได้มา**ไม่รวมโมดูล inv/req/asset/event** (ถูกปิดใน template ของ eden-core — อยู่ใน Eden เต็ม) การเทียบส่วนนั้นอ้างอิง domain model ที่ทราบจาก controller references (เช่น `sit_situation.instance_type` ระบุ rms_req) และเอกสารชุมชน Eden
