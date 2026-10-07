@@ -4,11 +4,25 @@
 
 ## ความสามารถหลัก
 
+- **ระบบเข้าสู่ระบบ + Accountability ครบวงจร** — ทุกการเข้าถึง/แก้ไขข้อมูลมีตัวตน (createdBy/updatedBy) + Audit Log อัตโนมัติทุก mutation + Soft-delete (ลบแล้วเก็บร่องรอยได้) + UUID กลางทุก record เตรียมพร้อมแลกเปลี่ยนข้อมูล
 - บริหารเหตุการณ์ภัยพิบัติครบวงจร ตั้งแต่รับสายเหตุการณ์ รายงานสถานการณ์ ทะเบียนผู้ประสบภัย ศูนย์พักพิง คลังสิ่งของ ไปจนถึงคำขอความช่วยเหลือ
+- **Presence Trail ผู้สูญหาย** — บันทึกประวัติการพบตัวรายคน (สถานะ/เวลา/สถานที่/ผู้พบ) พร้อมช่องทางติดต่อหลายช่องทางต่อบุคคล (เทียบ pr_presence ของ Eden)
+- **Movement Ledger** — ประวัติผู้อพยพเข้า-ออกศูนย์พักพิง (ShelterOccupancy) และ บัญชีรับ/จ่าย/โอน/ปรับสต๊อก (StockMovement) พร้อมแจ้งเตือนสต๊อกใกล้หมดอัตโนมัติ (เทียบ cr_shelter_occupancy + inv_send/recv ของ Eden)
 - แผนที่ GIS แสดงเหตุการณ์ ศูนย์พักพิง และองค์กร พร้อมเลเยอร์และมุมมองดาวเทียม
 - การแจ้งเตือนภัยพิบัติผ่านหลายช่องทาง (SMS / Email / Line / Facebook)
 - **ผู้ช่วย AI ด้านการจัดการภัยพิบัติ** — ผู้เชี่ยวชาญที่รับคำถาม วิเคราะห์ ตอบพร้อมคำแนะนำที่จำเป็น ค้นข้อมูลได้ทั้งจากภายในแพลตฟอร์ม (Prisma ทุกโมดูล) และจากภายนอก (Web Search พร้อมแหล่งอ้างอิงคลิกได้)
 - Dashboard สรุป KPI และกราฟสถานการณ์แบบเรียลไทม์จากข้อมูลจริงในระบบ
+
+## การเข้าสู่ระบบ (บัญชีทดสอบ)
+
+| บทบาท | อีเมล | รหัสผ่าน |
+|---|---|---|
+| ผู้ดูแลระบบ | admin@eden.go.th | Admin@2568 |
+| ผู้ประสานงาน | coordinator@eden.go.th | Coord@2568 |
+| เจ้าหน้าที่ | officer.cm@eden.go.th | Officer@2568 |
+| อาสาสมัคร | volunteer1@eden.go.th | Vol@2568 |
+
+> Session เป็น httpOnly cookie (HMAC-SHA256, 12 ชม.) · จัดการผู้ใช้/รีเซ็ตรหัสผ่านเฉพาะผู้ดูแลระบบ
 
 ## โมดูลทั้งหมด 13 โมดูล
 
@@ -91,9 +105,16 @@ bun run dev
 | `/api/inventory` | GET, POST, PUT, DELETE | คลังสินค้า |
 | `/api/requests` | GET, POST, PUT, DELETE | คำขอความช่วยเหลือ |
 | `/api/alerts` | GET, POST, PUT, DELETE | การแจ้งเตือน |
-| `/api/users` | GET, POST, PUT, DELETE | ผู้ใช้/บทบาท |
+| `/api/users` | GET, POST, PUT, DELETE | ผู้ใช้/บทบาท (admin-only สำหรับเพิ่ม/รีเซ็ตรหัสผ่าน) |
 | `/api/stats` | GET | สถิติรวมสำหรับ Dashboard |
 | `/api/ai-assistant` | POST | ผู้ช่วย AI — `{ question, usePlatform, useWeb }` |
+| `/api/auth/login` · `/logout` · `/me` | POST/GET | เข้า/ออกระบบ + ข้อมูลผู้ใช้ปัจจุบัน |
+| `/api/persons/[id]/contacts` | GET, POST, PUT, DELETE | ช่องทางติดต่อรายบุคคล (หลายช่องทาง) |
+| `/api/persons/[id]/events` | GET, POST | presence trail — บันทึกการพบตัว + อัปเดตสถานะอัตโนมัติ |
+| `/api/shelters/[id]/occupancy` | GET, POST | บันทึกผู้อพยพเข้า-ออก (ledger) |
+| `/api/inventory/movements` | GET, POST | รับ/จ่าย/โอน/ปรับสต๊อก (ledger + low-stock alert อัตโนมัติ) |
+
+> ทุก endpoint (ยกเว้น auth) บังคับ login (401 ถ้าไม่มี session) · ทุก model มี meta fields: `uuid` / `deleted` (soft-delete) / `createdBy` / `updatedBy`
 
 ## ผู้ช่วย AI ด้านการจัดการภัยพิบัติ
 

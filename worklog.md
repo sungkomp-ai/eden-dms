@@ -489,3 +489,100 @@ Work Log:
 Stage Summary:
 - docs/ARCHITECTURE-COMPARISON.md ครบ 4 ส่วนที่ผู้ใช้ขอ: (1) ความสัมพันธ์ 9 entity แบบ ER + R1–R14 อ้าง field จริงจาก source ทั้งสองฝั่ง (2) G1–G10 รายช่องว่างพร้อมเกณฑ์ปิด (3) Action Plan พร้อม PD รายงานย่อย (4) Scorecard ต่อโดเมน + ต่อมิติพร้อม projection
 - ข้อค้นพบใหม่จากมุมความสัมพันธ์: HR ไม่ผูก Person (R4), User ไม่ผูกอะไรเลย (R5/R14), Org ผูก Warehouse แต่ไม่ผูก Shelter (R8 ไม่สม่ำเสมอ), Person/AidRequest/HR ไม่มี FK กับ Location — ทั้งหมดถูกแปลงเป็นงาน P1 แล้ว
+
+---
+Task ID: 17.2-e
+Agent: full-stack-developer
+Task: จัดการผู้ใช้ + รหัสผ่าน (admin-only)
+
+Work Log:
+- src/app/api/users/route.ts — เลิกใช้ createHandler เขียน POST custom: requireUser + role 'admin' เท่านั้น (ไม่ใช่ → 403 {error:'เฉพาะผู้ดูแลระบบ'}); รับ {email,name,role,password,status?} → ตรวจ email format (regex คร่าว ๆ) + ตรวจซ้ำด้วย db.user.findUnique + password >= 8 → create พร้อม passwordHash: hashPassword(password), lastLoginAt: null → audit('create','admin',`เพิ่มผู้ใช้ใหม่: ${name} (${role})`) → 201 คืน user ไม่รวม passwordHash; GET คง listHandler (requireUser ในตัว) แต่ครอบด้วย sanitizeUser ตัด passwordHash ออกจากผลลัพธ์ (listHandler ใช้ findMany ไม่มี select — ถ้าปล่อยจะ leak แฮชให้ user ทุก role); cfg meta:false คงเดิมไม่ถอด
+- src/app/api/users/[id]/route.ts — GET คง getHandler + sanitize passwordHash เช่นกัน; PUT custom: requireUser + admin-only (403) → รับ {name?,role?,status?,password?} → validate role/status ตาม whitelist, password >= 8 (ถ้าส่งมา → hashPassword) → ไม่ส่ง field ใด field หนึ่ง = คงค่าเดิม → update ด้วย db.user → audit 'update' module 'admin' ระบุชัด "รีเซ็ตรหัสผ่านผู้ใช้" หรือ "แก้ไขข้อมูลผู้ใช้" → 200 คืน user ไม่รวม passwordHash; DELETE custom: requireUser + admin-only, id === auth.id → 400 'ไม่สามารถลบบัญชีตัวเองได้', ไม่พบ → 404, ลบจริงด้วย db.user.delete (User ไม่มี soft-delete) + audit 'delete' → {success:true}; ไม่ใช้ generic updateHandler/deleteHandler แล้ว
+- src/components/eden/admin.tsx — (1) ฟอร์ม "เพิ่มผู้ใช้" เพิ่มช่องรหัสผ่าน (type password, autoComplete=new-password, minLength 8, ตรวจ >= 8 ตัวก่อนส่ง, มีคำอธิบายภาษาไทย) — โหมดแก้ไขไม่แสดงช่องรหัสผ่านและล็อกอีเมล (อีเมลใช้เข้าสู่ระบบ แก้ไม่ได้ตาม API contract); (2) ตารางผู้ใช้เพิ่มปุ่ม "รีเซ็ตรหัสผ่าน" (KeyRound) เปิด FormDialog ใหม่ → PUT {password} → toast แจ้งผล + refetch; lastLoginAt แสดงอยู่แล้วด้วย fmtDateTime (คงเดิม); (3) บังคับสิทธิ์ระดับ UI: ดึง /api/auth/me → ถ้าไม่ใช่ admin ซ่อนปุ่ม เพิ่มผู้ใช้/รีเซ็ตรหัสผ่าน/แก้ไข/ลบ + แสดงแถบ "เฉพาะผู้ดูแลระบบ — คุณสามารถดูรายชื่อผู้ใช้ได้เท่านั้น..." (amber); ปุ่มลบ disable เมื่อเป็นบัญชีตัวเอง (isSelf) ตามกติกา API; ทุก action สำเร็จ → toast + users.refetch(); ภาษาไทยทั้งหมด, shadcn/ui เท่านั้น, responsive
+
+Stage Summary:
+- API ผู้ใช้ปลอดภัยครบวงจร: POST/PUT/DELETE /api/users บังคับ login + role admin จริง (403 ที่ API ไม่ใช่แค่ UI), รหัสผ่าน hash scrypt ผ่าน hashPassword และไม่มีเส้นทางใดคืน passwordHash ออกนอกระบบอีก (sanitize ทั้ง list/get/create/update), ห้ามลบตัวเอง, ลบแบบ hard-delete ตาม schema, ทุก mutation เขียน audit log ระบุผู้ทำ + รายละเอียดภาษาไทย
+- UI ผู้ดูแลระบบรองรับวงจรบัญชีเต็มรูปแบบ: เพิ่มผู้ใช้พร้อมตั้งรหัสผ่าน, รีเซ็ตรหัสผ่านรายคน, แก้ชื่อ/บทบาท/สถานะ, ลบบัญชี, แสดงเข้าสู่ระบบล่าสุด — non-admin เห็นเฉพาะรายชื่อ (view-only) พร้อมข้อความแจ้งสิทธิ์
+- ตรวจรับ: lint ผ่าน, curl ครบ 4 ข้อตามแผน + ทดสอบเสริม (login ด้วยรหัสใหม่ได้/รหัสเก่า 401, email ซ้ำ 400, รหัสสั้น 400, self-delete 400, volunteer PUT/DELETE 403, no-auth 401) — DB คงสถานะ seed 6 users เหมือนเดิม (test user ถูกลบแล้ว)
+- หมายเหตุ "ต้องแก้เพิ่ม": ไม่มี — ทำครบใน 3 ไฟล์ที่กำหนด (สิ่งที่แตะเพิ่มจากสเปค: sanitize passwordHash ใน GET เพราะ listHandler/getHandler คืนทุก field — ทำในไฟล์ users เอง ไม่แก้ src/lib/api.ts)
+
+---
+Task ID: 17.2-c
+Agent: full-stack-developer
+Task: Person เชิงลึก — PersonContact + PersonEvent API/UI + DOB
+
+Work Log:
+- สร้าง src/app/api/persons/[id]/contacts/route.ts — GET (list ของ person, filter deleted:false, orderBy priority asc → createdAt desc, ตรวจ person มีตัวจริงไม่ soft-delete ก่อน) + POST (create {type,value,priority,isEmergency,note} — validate CONTACT_TYPES/value บังคับ, clamp priority 1–3, createdBy/updatedBy=auth.name, audit 'create' module 'persons' รายละเอียดชื่อบุคคล+ช่องทาง)
+- สร้าง src/app/api/persons/[id]/contacts/[contactId]/route.ts — PUT (update type/value/priority/isEmergency/note + updatedBy + audit 'update') + DELETE (soft-delete: update deleted:true+updatedBy — ห้ามลบจริง + audit 'delete'); ทั้งคู่ findFirst เช็ค id+personId+deleted:false ก่อนทุกครั้ง ไม่ตรง → 404
+- สร้าง src/app/api/persons/[id]/events/route.ts — GET (list PersonEvent, filter deleted:false, orderBy occurredAt desc) + POST (validate EVENT_STATUSES 9 ค่า, parse occurredAt optional → ใน db.$transaction เดียว: (1) personEvent.create createdBy=auth.name (2) person.update status ตาม mapping sighted|missing→missing, found→found, safe→safe, injured|hospitalized→injured, deceased→deceased, evacuated|transferred→evacuated + updatedBy; audit ครบ 2 รายการ: 'create' บันทึกเหตุการณ์ + 'update' "อัปเดตสถานะจาก presence trail: X → Y"); หมายเหตุ: PersonEvent ไม่มี updatedBy/updatedAt ตาม schema จึงใส่เฉพาะ createdBy
+- แก้ src/app/api/persons/route.ts + src/app/api/persons/[id]/route.ts เฉพาะ 2 จุด: (1) เพิ่ม 'dateOfBirth','emergencyContact' ใน fields array ของ cfg ทั้งสองไฟล์ (2) เพิ่ม transform แปลง dateOfBirth ISO string → Date (list: `else delete`, [id]: `else if ('dateOfBirth' in d) delete` ตาม pattern lastSeenAt เดิม) — บรรทัด transform ใน [id] จำเป็นเพราะ updateHandler ใช้ transform ตัวเดียวกันตอน PUT ไม่งั้น Prisma จะ 500 (ส่วน emergencyContact เป็น String? ไม่ต้องแปลง)
+- แก้ src/components/eden/persons.tsx (~640 บรรทัด): (1) ฟอร์มเพิ่ม/แก้ไขเพิ่มช่อง "วันเกิด" (input type=date, toDateInput() แปลงคืนตอน edit, buildPayload ส่ง ISO) และ "ผู้ติดต่อฉุกเฉิน" (text) (2) เพิ่ม Dialog รายละเอียดจากปุ่ม Eye ในแถวตาราง: การ์ดข้อมูลพื้นฐาน (วันเกิด/อายุ·เพศ/โทรศัพท์/ผู้ติดต่อฉุกเฉิน/พบล่าสุด/เหตุการณ์/พักพิง) + section ช่องทางติดต่อ (list PersonContact เรียง priority: Badge ชนิดจาก optBadge, ป้าย "หลัก" priority=1, ป้าย "ฉุกเฉิน" isEmergency, ปุ่มลบผ่าน useConfirmDelete → API soft-delete + ฟอร์มเพิ่ม Select ชนิด/Input ค่า/Switch เบอร์ฉุกเฉิน) + section Timeline การพบตัว (list PersonEvent ใหม่→เก่า แบบ timeline เส้นซ้าย, Badge สถานะ: missing=แดง sighted=เหลือง found/safe=เขียว injured/hospitalized=ส้ม deceased=เทาเข้ม evacuated/transferred=teal, fmtDateTime + สถานที่(MapPin) + ผู้สังเกต + หมายเหตุ + ผู้บันทึก + ฟอร์มเพิ่ม Select สถานะ/Input สถานที่/Input ผู้สังเกต/Textarea หมายเหตุ) (3) ทั้งสอง section ใช้ max-h-72 overflow-y-auto + scrollbar styling ตาม pattern shell.tsx (webkit-scrollbar + scrollbar-width:thin ธีมสว่าง) (4) ใช้ useFetch(url|null) ยิง /api/persons/{id}/contacts กับ /events เมื่อเปิด dialog, หลังเพิ่ม/ลบ contact → refetchContacts, หลังบันทึก event → refetchEvents + refetch persons (สถานะเปลี่ยน) และแสดงสถานะล่าสุดของบุคคลจาก list (detailPerson = persons.find) (5) UI ไทยทั้งหมด, aria-label ครบปุ่มไอคอน, responsive mobile-first
+- ทดสอบ curl ครบ: login → GET persons (JSON ได้ dateOfBirth/emergencyContact ใน list) → POST/GET/PUT/DELETE contact (ลบซ้ำ 404, ไม่ login 401) → POST event 3 รูปแบบ (transferred→evacuated, sighted→missing เปลี่ยนสถานะจริง, transferred คืนค่าเดิม) → PUT dateOfBirth+emergencyContact (ISO ถูกแปลงเป็น Date ถูกต้อง 1980-05-10T00:00:00.000Z) → ตรวจ audit-logs ครบทุก action → เก็บกวาด: soft-delete contact ผ่าน API DELETE + soft-delete event 3 แถวด้วย updateMany ตาม id ที่จับไว้เท่านั้น + คืน dateOfBirth/emergencyContact ของแถว seed ที่ใช้ทดสอบเป็น null ด้วย prisma ตรงจุด (บุคคล seed ครบ 24 คน สถานะเท่าเดิม)
+
+Stage Summary:
+- Person เชิงลึกครบตามแผน P1 (G3): ทะเบียนบุคคลมี DOB/ผู้ติดต่อฉุกเฉิน, ช่องทางติดต่อหลายช่องทางต่อคน (priority+ฉุกเฉิน) และ presence trail ที่อัปเดตสถานะบุคคลอัตโนมัติแบบ atomic ($transaction) เทียบ pr_contact/pr_presence ของ Eden
+- ทุก route ใหม่บังคับ login (401 เมื่อไม่มี session), meta fields ครบ (deleted/uuid/createdBy/updatedBy) และ audit รายละเอียดชัดเจนทุก mutation — ตรวจสอบได้จาก /api/audit-logs
+- การตัดสินใจสำคัญ: (1) เพิ่ม dateOfBirth ใน transform ของ [id]/route.ts อีก 2 บรรทัดนอกจากที่สั่ง เพราะ updateHandler รัน transform ตัวเดียวกันตอน PUT — ไม่งั้นแก้วันเกิดจะ 500 (อยู่ในไฟล์ที่อนุญาตอยู่แล้ว แก้เฉพาะจุดเดียวกัน) (2) ทดสอบการเปลี่ยนสถานะใช้ event ที่ mapping กลับมาสู่สถานะเดิมของแถว seed (evacuated) จึงไม่บิดเบือนข้อมูล seed (3) เก็บกวาดข้อมูลทดสอบแบบ id-specific เท่านั้น — ข้อมูล seed ครบ 24 คน/6 contacts/8 events เหมือนเดิม (แถวทดสอบทั้งหมด soft-deleted)
+- ต้องแก้เพิ่ม: ไม่มี (พบ error ชั่วคราวใน dev.log "Identifier 'isAuthApi' has already been declared" จาก src/middleware.ts — เป็นของ agent งานคู่ขนานแก้อยู่ ไม่เกี่ยวกับไฟล์ชุดนี้ และ dev server กลับมาปกติเอง)
+---
+Task ID: 17.2-d
+Agent: full-stack-developer
+Task: Movement ledger — ShelterOccupancy + StockMovement API/UI (ปิด Gap G4 ตาม docs/ARCHITECTURE-COMPARISON.md)
+
+Work Log:
+- สร้าง src/app/api/shelters/[id]/occupancy/route.ts (ใหม่):
+  - GET: ShelterOccupancy ของ shelter (createdAt desc, take 100) + requireUser (401 ถ้าไม่ล็อกอิน)
+  - POST {delta, note?}: db.$transaction — (1) findFirst shelter deleted:false → 404 ถ้าไม่เจอ (2) newCount = currentOccupancy + delta, < 0 → 400 "จำนวนไม่ถูกต้อง" (delta 0/ไม่ใช่จำนวนเต็มก็ 400) (3) create log {delta, count:newCount, note, createdBy:auth.name} (4) update currentOccupancy + status อัตโนมัติ: capacity>0 && newCount>=capacity → 'full', เดิม 'full' && newCount<capacity → 'open' (5) audit 'update' module 'shelters' รูปแบบ `บันทึกเข้า-ออกพักพิง {name}: +5 → 215 คน` — response 201 {log, shelter}
+- สร้าง src/app/api/inventory/movements/route.ts (ใหม่):
+  - GET: filters itemId / warehouseId (OR from|to) / type (ตรวจค่า → 400 ถ้าไม่ใน 4 ชนิด), include item{name,unit} + fromWarehouse/toWarehouse{name}, orderBy createdAt desc take 200
+  - POST {itemId, type, quantity, toWarehouseId?, reference?, note?}: ตรวจ type ∈ receive|issue|transfer|adjust, quantity เป็นจำนวนเต็ม ≠ 0, item มีและ deleted:false (404 ถ้าไม่เจอ) → $transaction ราย type:
+    * receive: qty>0; to = toWarehouseId ?? item.warehouseId (ตรวจคลัง deleted:false → 400 ถ้าไม่พบ); item.quantity += qty; อัปเดต warehouseId = to ถ้ามี
+    * issue: qty>0; from = item.warehouseId; newQty < 0 → 400 "สต๊อกไม่พอ (คงเหลือ X)"; item.quantity -= qty
+    * transfer: qty>0; toWarehouseId บังคับ + != item.warehouseId (400 ทั้งสองกรณี); ตรวจคลังปลายทาง; เปลี่ยน item.warehouseId (จำนวนคงเดิม)
+    * adjust: signed delta; newQty < 0 → 400 "จำนวนไม่ถูกต้อง"
+    * create StockMovement: quantity เก็บ signed เฉพาะ adjust / absolute สำหรับชนิดอื่น + from/to warehouse + reference/note + createdBy:auth.name
+    * low-stock alert: ก่อน > minQuantity && หลัง <= minQuantity → create Alert ใน tx เดียวกัน (title `⚠️ สต๊อกใกล้หมด: {name}`, message คงเหลือ/จุดขั้นต่ำ/คลัง/ที่มา, channel broadcast, severity warning, audience all, status draft) + audit 'create' module 'alerts'; response มี flag lowStockAlert ให้ UI แจ้ง toast
+    * audit 'create' module 'inventory' ทุกครั้ง ด้วยชื่อคลัง (ไม่ใช่ id) เช่น `เบิกจ่าย เรือยางเคลื่อนที่เร็ว -1 ลำ (คลัง คลังบรรเทาทุกข์ ปภ. บางเขน)`
+- แก้ src/components/eden/shelters.tsx (436 → 675 บรรทัด):
+  - ปุ่ม "เข้า-ออก" (History icon) ต่อ card → FormDialog "บันทึกผู้อพยพเข้า-ออก" (wide): Progress currentOccupancy/capacity (สีตาม occupancyTone เดิม) + ปุ่ม รับเข้า (UserPlus, เขียว) / ย้ายออก (UserMinus, ส้ม, disable เมื่อ occ=0)
+  - Dialog กรอก: Input number + Textarea หมายเหตุ → POST /api/shelters/{id}/occupancy → toast ยอดใหม่ + refresh รายการ + refresh ledger (ใช้ shelter จาก response อัปเดต ledgerFor ทันที)
+  - ประวัติล่าสุด: list max-h-56 overflow-y-auto + scrollbar styling ตาม shell.tsx (webkit w-1.5 + scrollbar-width thin, สี slate-300 บนพื้นสว่าง) — badge delta เขียว(+)/แดง(-) font-mono, รวม count คน, note, fmtDateTime + createdBy
+  - Loading skeleton ใน list, empty state "ยังไม่มีบันทึกเข้า-ออก", ไม่แตะฟีเจอร์เดิม (เพิ่ม/แก้ไข/ลบ/filters ครบ)
+- แก้ src/components/eden/inventory.tsx (612 → 904 บรรทัด):
+  - DropdownMenu "เคลื่อนไหว" ต่อ item (ในช่องปรับสต๊อก/จัดการ หลังเส้นคั่น) 4 รายการพร้อม icon สี: รับเข้า PackagePlus เขียว / เบิกจ่าย PackageMinus ส้ม / โอนย้าย ArrowLeftRight เทา / ปรับยอด SlidersHorizontal เหลือง → เปิด Dialog เดียว (type เลือกเปลี่ยนได้ผ่าน Select)
+  - Dialog เคลื่อนไหวสต๊อก: Select ประเภท + Input จำนวน (adjust ติดลบได้, ชนิดอื่น min=1) + Select คลังปลายทาง (แสดงเฉพาะ transfer — ใช้ warehouses จาก useFetch /api/warehouses ที่โหลดอยู่แล้ว, กรองคลังปัจจุบันออก + เตือนถ้าไม่มีคลังอื่น) + Input เอกสารอ้างอิง/ผู้เบิก + Textarea หมายเหตุ + กล่อง preview "คงเหลือ X → หลังรายการ Y" (แดงถ้าติดลบ) → POST /api/inventory/movements → toast + toast เตือนแยกเมื่อ lowStockAlert + items.refetch() + movements.refetch()
+  - Tab ใหม่ "ประวัติการเคลื่อนไหว" (History icon): GET /api/inventory/movements (useFetch) แสดง 50 ล่าสุด (slice จาก 200) — ตาราง เวลา / ชนิด badge (receive เขียว, issue ส้ม, transfer เทา, adjust เหลือง — MOVEMENT_TYPES กำหนดในไฟล์เพราะห้ามแก้ constants.ts) / สินค้า / จำนวน± (สีตามชนิด, adjust แสดง signed) / จาก → ถึง (ArrowRight, — เมื่อว่าง) / อ้างอิง (truncate+title) / โดย — scroll container max-h-72 overflow-auto + scrollbar styling เดียวกับ shelters; RefreshButton + EmptyState + ErrorState + TableSkeleton
+  - ฟีเจอร์เดิมไม่ถูกแตะ: quick ±10, low-stock badge "ต้องเติม", ฟอร์มสินค้า/คลัง, ค้นหา/กรองหมวด (หมายเหตุ: quick ±10 ยังเป็น PUT ตรง — ไม่ผ่าน ledger เพราะเป็นพฤติกรรมเดิม ไม่แก้)
+- ตรวจ: bun run lint ผ่าน (0 error), dev.log ไม่มี error, GET /api/inventory/movements จากหน้า UI → 200
+- ทดสอบ curl (บัญชี admin@eden.go.th) + ล้างข้อมูลทดสอบคืน seed ครบ (สคริปต์ชั่วคราวใน project root รันแล้วลบทันที — ไม่ทิ้งไฟล์): shelter 210 คน/open เท่าเดิม, item เรือยาง qty=22/คลังเดิม, stock_movements=9, shelter_occupancy_logs=7, alerts=11 (เหลือแต่ seed), ทิ้ง audit_logs จากการทดสอบไว้ตามหลัก audit trail
+
+Stage Summary:
+- ปิด Gap G4 (movement ledger) ครบทั้ง 2 entity: ShelterOccupancy (log +/− ผู้อพยพ + auto status full/open) และ StockMovement (รับ/จ่าย/โอน/ปรับ + low-stock draft alert) — ทุก mutation เป็น $transaction เดียวกับการอัปเดตยอด ไม่มีทางยอดเพี้ยนจาก race
+- Accountability ครบ: ทุก handler requireUser (401), createdBy จาก session จริง, audit ทุก action ด้วยข้อความไทยอ่านรู้เรื่อง
+- ผล curl ทดสอบผ่านทั้งหมด: occupancy +5 → count 215/occ 215 → -5 คืน 210; เข้าถึงไม่ล็อกอิน → 401; movement issue 1 (22→21), issue 9999 → 400 "สต๊อกไม่พอ (คงเหลือ 21)", receive คืน 22, transfer ไป-กลับ (คลังเปลี่ยนจริง, qty คงเดิม, โอนซ้ำคลังเดิม → 400), adjust -12 → 10 + lowStockAlert=true (สร้าง Alert draft ถูกต้อง) + adjust -20 ติดลบ → 400 + adjust +12 คืน 22; GET filters type/itemId ทำงาน
+- ข้อจำกัดที่ตั้งใจไว้: GET movements take 200 ตาม spec (UI slice 50); delta=0 ปฏิเสธเพื่อกัน log ขยะ; ปรับ status เป็น 'full' เฉพาะ capacity > 0
+- "ต้องแก้เพิ่ม": ไม่มี — ทำงานครบในไฟล์ที่อนุญาต (2 API ใหม่ + shelters.tsx + inventory.tsx), ไม่แตะ prisma/schema.prisma, src/lib/*, หรือไฟล์โมดูลอื่น
+
+---
+Task ID: 17.2 (main)
+Agent: main (Z.ai Code)
+Task: ปรับปรุง platform ตามแผน P1 (ปิด Gap G1–G4) — Login จริง + meta fields + audit ครบ + Person เชิงลึก + Movement ledger
+
+Work Log:
+- Phase 1 (main): อ่านโครงสร้างปัจจุบัน (31 API routes / 15 module components / lib/api.ts generic CRUD) → ออกแบบให้ retrofit อยู่ใน lib กลางแทนแก้ 30 ไฟล์
+- schema.prisma รีไรต์ใหม่: meta fields กลาง (deleted/uuid/createdBy/updatedBy) 12 data models, User.passwordHash, Person.dateOfBirth + emergencyContact, โมเดลใหม่ 4 ตัว (PersonContact, PersonEvent, ShelterOccupancy, StockMovement) → db push --force-reset + seed ใหม่ (users 6 บัญชีพร้อม scrypt hash, contacts 6, events 8, occupancy 7, movements 9)
+- สร้าง src/lib/auth.ts: scrypt hash + session HMAC-SHA256 httpOnly cookie 12 ชม. + requireUser/isResponse + audit(); ย้าย ROLE_LABELS ไป lib/constants.ts (client-safe)
+- src/middleware.ts: gate หน้า page → redirect /login, API → 401 JSON (แก้ duplicate ประกาศ isAuthApi จาก edit ค้าง)
+- lib/api.ts อัปเกรด: ทุก handler บังคับ login, list กรอง deleted=false, create ใส่ createdBy/updatedBy, update ตรวจไม่แตะแถวที่ลบแล้ว, DELETE → soft-delete + audit ระบุชื่อผู้ใช้จริง; cfg.meta=false ยกเว้น user/auditLog; แก้ getHandler signature (req, cfg, id) ทั้ง 11 ไฟล์ [id]/route.ts
+- Custom routes ใส่ guard มือ: locations/settings/stats/ai-assistant/map-layers(4 ไฟล์, DELETE เปลี่ยนเป็น soft-delete) + users มี sanitize passwordHash
+- API auth ใหม่: /api/auth/login (ตรวจ scrypt + lastLoginAt + audit) /logout /me
+- UI: หน้า /login (ธีม slate-900 + บัญชีทดสอบคลิกกรอกอัตโนมัติ), page.tsx ตรวจ /api/auth/me + gate, shell.tsx แสดง user จริง + ปุ่ม logout, seed demo accounts ตรงอีเมล @eden.go.th
+- แก้ bug: login route import audit ผิดที่ (ย้าย audit ไป auth.ts + api.ts re-export), eslint ไม่ ignore upload/ (เพิ่ม ignores)
+- Phase 2 (subagents ขนาน 3 ตัว — บันทึกแยกข้างบน): 17.2-c Person ลึก (contacts+events API+UI timeline), 17.2-d Movement ledger (occupancy+stock API+UI 2 โมดูล + low-stock Alert อัตโนมัติ), 17.2-e Users admin-only + รีเซ็ตรหัสผ่าน — ทุกตัว lint ผ่าน + curl ผ่าน + เก็บกวาดข้อมูลทดสอบแล้ว
+- Phase 3 (main): lint รวมผ่าน (exit 0) → agent-browser verify golden path ครบ: login page render/redirect ✓, login admin ✓, header user จริง+logout ✓, persons dialog ช่องทางติดต่อ (0→1) + presence trail บันทึกพบเห็นพร้อม toast อัปเดตสถานะ ✓, shelters occupancy รอบ +5/-5 (1,350→1,355→1,350) ✓, inventory เบิกจ่าย 10 (5,200→5,190) แล้วรับเข้าคืน ✓ + แท็บประวัติการเคลื่อนไหว 9 รายการ ✓, admin ตารางผู้ใช้ + lastLoginAt จริง ✓, มือถือ 390px + footer sticky ✓, logout → /login ✓, console/dev.log ไม่มี error ✓
+- README: เพิ่มส่วนการเข้าสู่ระบบ + ความสามารถใหม่ + endpoint ใหม่ 5 กลุ่ม
+
+Stage Summary:
+- P1 ปิดครบ G1–G4 ตามแผนใน docs/ARCHITECTURE-COMPARISON.md §8.1: G1 accountability (login+audit+createdBy), G2 soft-delete/uuid, G3 Person ลึก (DOB/contacts/presence trail), G4 movement ledger (occupancy+stock+low-stock alert)
+- สถาปัตยกรรมที่ตัดสินใจ: session แบบ HMAC cookie ไม่ใช้ NextAuth (ลด dependency/ตรวจสอบง่าย — เทียบเท่าตามเป้าหมาย 1.2), soft-delete ผ่าน lib กลางจึงครบทุก route โดยอัตโนมัติ, ledger อัปเดตตัวเลขใน $transaction เดียวกับการบันทึก
+- Scorecard คาดหวังจากเอกสารฉบับ 1.1: ความน่าเชื่อถือเชิงระบบ 2 → 4, Person 2.5 → 4, Shelter/Inventory 3 → 4.5

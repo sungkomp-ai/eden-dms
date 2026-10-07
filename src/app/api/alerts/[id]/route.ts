@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getHandler, updateHandler, deleteHandler, audit, CrudConfig } from '@/lib/api'
+import { getSessionUser } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,18 +17,18 @@ const cfg: CrudConfig = {
   },
 }
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  return getHandler(cfg, id)
+  return getHandler(req, cfg, id)
 }
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const body = (await req.json()) as Record<string, unknown>
   const res = await updateHandler(req, cfg, id)
-  if (body.status === 'sent') await audit('send', 'alerts', 'ส่งการแจ้งเตือน: ' + String(body.title ?? ''))
+  if (body.status === 'sent') await audit('send', 'alerts', 'ส่งการแจ้งเตือน: ' + String(body.title ?? ''), getSessionUser(req)?.name ?? 'system')
   return res
 }
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  return deleteHandler(cfg, id)
+  return deleteHandler(req, cfg, id)
 }

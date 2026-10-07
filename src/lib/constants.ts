@@ -215,3 +215,11 @@ export function fmtNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '0'
   return n.toLocaleString('th-TH')
 }
+
+/** ป้ายชื่อบทบาทผู้ใช้ (client-safe — แยกจาก lib/auth ที่ใช้ node:crypto) */
+export const ROLE_LABELS: Record<string, string> = {
+  admin: 'ผู้ดูแลระบบ',
+  coordinator: 'ผู้ประสานงาน',
+  officer: 'เจ้าหน้าที่',
+  volunteer: 'อาสาสมัคร',
+}

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requireUser, isResponse } from '@/lib/auth'
 import { db } from '@/lib/db'
 import ZAI from 'z-ai-web-dev-sdk'
 
@@ -178,6 +179,8 @@ function systemPrompt(): string {
 
 // ---------- API handler ----------
 export async function POST(req: NextRequest) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
   try {
     const body = (await req.json()) as {
       question?: string

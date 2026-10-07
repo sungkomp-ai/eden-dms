@@ -4,11 +4,13 @@
 import * as React from 'react'
 import {
   LayoutDashboard, AlertTriangle, FileText, Users, Building2, HeartHandshake,
-  Home, Boxes, ClipboardList, Bell, Map as MapIcon, Settings, Menu, X, Radio, Bot,
+  Home, Boxes, ClipboardList, Bell, Map as MapIcon, Settings, Menu, X, Radio, Bot, LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { fmtNum } from '@/lib/constants'
+import type { CurrentUser } from '@/app/page'
+import { ROLE_LABELS } from '@/lib/constants'
 
 export type ModuleKey =
   | 'dashboard' | 'assistant' | 'incidents' | 'sitreps' | 'persons' | 'organizations'
@@ -38,12 +40,14 @@ export const MODULES: ModuleDef[] = [
   { key: 'admin', label: 'ผู้ดูแลระบบ', icon: <Settings />, group: 'ระบบ' },
 ]
 
-export function Shell({ active, onNavigate, headerTitle, children, kpis }: {
+export function Shell({ active, onNavigate, headerTitle, children, kpis, user, onLogout }: {
   active: ModuleKey
   onNavigate: (key: ModuleKey) => void
   headerTitle: string
   children: React.ReactNode
   kpis?: Partial<Record<'activeIncidents' | 'missingPersons' | 'pendingRequests' | 'draftAlerts', number>>
+  user?: CurrentUser | null
+  onLogout?: () => void
 }) {
   const [mobileOpen, setMobileOpen] = React.useState(false)
 
@@ -170,11 +174,23 @@ export function Shell({ active, onNavigate, headerTitle, children, kpis }: {
                 <span className="text-xs font-medium text-emerald-700">ระบบออนไลน์</span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-600 text-xs font-bold text-white">ผ</div>
-                <div className="hidden sm:block leading-tight">
-                  <p className="text-xs font-semibold text-slate-800">ผู้ดูแลระบบกลาง</p>
-                  <p className="text-[10px] text-slate-500">ผู้ดูแลระบบ</p>
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-600 text-xs font-bold text-white">
+                  {(user?.name ?? 'ผ').trim().charAt(0)}
                 </div>
+                <div className="hidden sm:block leading-tight">
+                  <p className="text-xs font-semibold text-slate-800">{user?.name ?? 'ผู้ใช้งาน'}</p>
+                  <p className="text-[10px] text-slate-500">{user ? (ROLE_LABELS[user.role] ?? user.role) : ''}</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-slate-500 hover:text-red-600"
+                  onClick={onLogout}
+                  aria-label="ออกจากระบบ"
+                  title="ออกจากระบบ"
+                >
+                  <LogOut className="h-4 w-4" />
+                </Button>
               </div>
             </div>
           </div>

@@ -4,9 +4,11 @@
 import * as React from 'react'
 import {
   Tent, DoorOpen, Users, BedDouble, Plus, Pencil, Trash2, Phone, User, MapPin, Sparkles,
+  History, UserPlus, UserMinus,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
@@ -15,7 +17,7 @@ import {
 } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
-import { SHELTER_TYPES, SHELTER_STATUS, SHELTER_FACILITIES, optLabel, fmtNum } from '@/lib/constants'
+import { SHELTER_TYPES, SHELTER_STATUS, SHELTER_FACILITIES, optLabel, fmtNum, fmtDateTime } from '@/lib/constants'
 import {
   useFetch, apiSend, ModuleHeader, StatCard, StatusBadge, SearchInput,
   RefreshButton, EmptyState, TableSkeleton, ErrorState, FormDialog, Field,
@@ -36,6 +38,17 @@ interface Shelter {
   lat: number | null
   lng: number | null
   _count: { persons: number }
+  createdAt: string
+}
+
+// P1 (G4) — รายการบันทึกผู้อพยพเข้า-ออก (movement ledger)
+interface OccupancyLog {
+  id: string
+  shelterId: string
+  delta: number
+  count: number
+  note: string | null
+  createdBy: string | null
   createdAt: string
 }
 
@@ -78,6 +91,16 @@ export default function SheltersModule() {
   const [form, setForm] = React.useState<ShelterForm>(EMPTY_FORM)
   const [saving, setSaving] = React.useState(false)
   const confirmDelete = useConfirmDelete()
+
+  // ===== P1 (G4): บันทึกผู้อพยพเข้า-ออก (movement ledger) =====
+  const [ledgerFor, setLedgerFor] = React.useState<Shelter | null>(null)
+  const [logs, setLogs] = React.useState<OccupancyLog[]>([])
+  const [logsLoading, setLogsLoading] = React.useState(false)
+  const [logsError, setLogsError] = React.useState<string | null>(null)
+  const [occDialog, setOccDialog] = React.useState<{ mode: 'in' | 'out'; shelter: Shelter } | null>(null)
+  const [occQty, setOccQty] = React.useState('')
+  const [occNote, setOccNote] = React.useState('')
+  const [occSaving, setOccSaving] = React.useState(false)
 
   const shelters = data ?? []
 
@@ -199,6 +222,70 @@ export default function SheltersModule() {
 
   const facilitiesOf = (s: Shelter): string[] =>
     (s.facilities ?? '').split(',').map((f) => f.trim()).filter(Boolean)
+
+  // ===== P1 (G4): handlers บันทึกเข้า-ออก =====
+  const loadLedger = React.useCallback((shelterId: string) => {
+    setLogsLoading(true)
+    setLogsError(null)
+    fetch(`/api/shelters/${shelterId}/occupancy`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json()
+      })
+      .then((json) => setLogs(Array.isArray(json) ? (json as OccupancyLog[]) : []))
+      .catch((e) => setLogsError(e instanceof Error ? e.message : 'โหลดประวัติไม่สำเร็จ'))
+      .finally(() => setLogsLoading(false))
+  }, [])
+
+  const openLedger = (s: Shelter) => {
+    setLedgerFor(s)
+    setLogs([])
+    loadLedger(s.id)
+  }
+
+  const openOcc = (mode: 'in' | 'out') => {
+    if (!ledgerFor) return
+    setOccQty('')
+    setOccNote('')
+    setOccDialog({ mode, shelter: ledgerFor })
+  }
+
+  const submitOcc = async () => {
+    if (!occDialog) return
+    const target = occDialog.shelter
+    const mode = occDialog.mode
+    const n = Number(occQty)
+    if (occQty.trim() === '' || !Number.isInteger(n) || n <= 0) {
+      toast({ title: 'กรุณากรอกจำนวนคน (จำนวนเต็มมากกว่า 0)', variant: 'destructive' })
+      return
+    }
+    const delta = mode === 'in' ? n : -n
+    setOccSaving(true)
+    try {
+      const res = await apiSend(`/api/shelters/${target.id}/occupancy`, 'POST', {
+        delta,
+        note: occNote.trim() || undefined,
+      }) as { log: OccupancyLog; shelter: Shelter }
+      toast({
+        title: mode === 'in' ? 'บันทึกการรับเข้าสำเร็จ' : 'บันทึกการย้ายออกสำเร็จ',
+        description: `${target.name}: ขณะนี้มีผู้พักพิง ${fmtNum(res.shelter.currentOccupancy)} / ${fmtNum(res.shelter.capacity)} คน`,
+      })
+      setOccDialog(null)
+      if (ledgerFor?.id === target.id) {
+        setLedgerFor(res.shelter)
+        loadLedger(target.id)
+      }
+      refetch()
+    } catch (e) {
+      toast({
+        title: 'บันทึกไม่สำเร็จ',
+        description: e instanceof Error ? e.message : 'เกิดข้อผิดพลาด',
+        variant: 'destructive',
+      })
+    } finally {
+      setOccSaving(false)
+    }
+  }
 
   const overallTone = occupancyTone(stats.overallRate)
 
@@ -330,11 +417,14 @@ export default function SheltersModule() {
                   )}
                 </div>
 
-                <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3">
                   <span className="text-xs text-slate-400">
                     ทะเบียนผู้พักพิง {s._count.persons} รายการ
                   </span>
                   <div className="flex gap-1.5">
+                    <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => openLedger(s)} aria-label={`บันทึกเข้า-ออกของ ${s.name}`}>
+                      <History className="h-3.5 w-3.5" /> เข้า-ออก
+                    </Button>
                     <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => openEdit(s)} aria-label={`แก้ไข ${s.name}`}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
@@ -427,6 +517,154 @@ export default function SheltersModule() {
           <Button onClick={submit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
             {saving ? 'กำลังบันทึก...' : editing ? 'บันทึกการแก้ไข' : 'เพิ่มศูนย์พักพิง'}
           </Button>
+        </div>
+      </FormDialog>
+
+      {/* ===== P1 (G4): Dialog บันทึกผู้อพยพเข้า-ออก + ประวัติล่าสุด ===== */}
+      <FormDialog
+        open={!!ledgerFor}
+        onOpenChange={(o) => { if (!o) setLedgerFor(null) }}
+        title="บันทึกผู้อพยพเข้า-ออก"
+        description={ledgerFor ? `${ledgerFor.name} — ติดตามยอดผู้พักพิงและประวัติการเข้า-ออกล่าสุด` : undefined}
+        wide
+      >
+        {ledgerFor && (() => {
+          const rate = ledgerFor.capacity > 0
+            ? Math.min(100, Math.round((ledgerFor.currentOccupancy / ledgerFor.capacity) * 100))
+            : 0
+          const tone = occupancyTone(rate)
+          return (
+            <div className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-slate-600">ผู้พักพิงปัจจุบัน</span>
+                  <span className={cn('font-semibold', tone.text)}>
+                    {fmtNum(ledgerFor.currentOccupancy)} / {fmtNum(ledgerFor.capacity)} คน
+                  </span>
+                </div>
+                <Progress
+                  value={rate}
+                  aria-label={`อัตราการใช้ความจุของ ${ledgerFor.name}`}
+                  className={cn('mt-1.5 h-2 bg-slate-100', tone.bar)}
+                />
+                <p className={cn('mt-1 text-[11px]', tone.text)}>
+                  {rate}% ของความจุ · {tone.label}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button onClick={() => openOcc('in')} className="gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+                  <UserPlus className="h-4 w-4" /> รับเข้า
+                </Button>
+                <Button
+                  onClick={() => openOcc('out')}
+                  variant="outline"
+                  disabled={ledgerFor.currentOccupancy <= 0}
+                  className="gap-1.5 border-orange-200 text-orange-700 hover:bg-orange-50 hover:text-orange-800"
+                >
+                  <UserMinus className="h-4 w-4" /> ย้ายออก
+                </Button>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-slate-700">ประวัติล่าสุด</p>
+                {logsError ? (
+                  <p className="mt-2 text-sm text-red-600">เกิดข้อผิดพลาด: {logsError}</p>
+                ) : logsLoading ? (
+                  <div className="mt-2 space-y-2">
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} className="h-12 animate-pulse rounded-lg bg-slate-100" />
+                    ))}
+                  </div>
+                ) : logs.length === 0 ? (
+                  <p className="mt-2 rounded-lg border border-dashed border-slate-200 p-4 text-center text-sm text-slate-400">
+                    ยังไม่มีบันทึกเข้า-ออก
+                  </p>
+                ) : (
+                  <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-slate-100 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:bg-slate-400 [scrollbar-width:thin] [scrollbar-color:theme(colors.slate.300)_transparent]">
+                    {logs.map((log) => (
+                      <div
+                        key={log.id}
+                        className="flex items-start justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0"
+                      >
+                        <div className="flex min-w-0 items-start gap-2">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'shrink-0 font-mono text-xs',
+                              log.delta > 0
+                                ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
+                                : 'border-red-200 bg-red-100 text-red-800',
+                            )}
+                          >
+                            {log.delta > 0 ? `+${log.delta}` : log.delta}
+                          </Badge>
+                          <div className="min-w-0">
+                            <p className="text-xs text-slate-600">รวม {fmtNum(log.count)} คน</p>
+                            {log.note && (
+                              <p className="mt-0.5 line-clamp-2 text-xs text-slate-500">{log.note}</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-[11px] text-slate-400">{fmtDateTime(log.createdAt)}</p>
+                          {log.createdBy && <p className="text-[11px] text-slate-400">โดย {log.createdBy}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })()}
+      </FormDialog>
+
+      {/* ===== P1 (G4): Dialog กรอกจำนวนรับเข้า/ย้ายออก ===== */}
+      <FormDialog
+        open={!!occDialog}
+        onOpenChange={(o) => { if (!o) setOccDialog(null) }}
+        title={occDialog?.mode === 'in' ? 'รับผู้อพยพเข้า' : 'ย้ายผู้อพยพออก'}
+        description={
+          occDialog
+            ? `${occDialog.shelter.name} — ปัจจุบัน ${fmtNum(occDialog.shelter.currentOccupancy)} / ${fmtNum(occDialog.shelter.capacity)} คน`
+            : undefined
+        }
+      >
+        <div className="space-y-4">
+          <Field label={occDialog?.mode === 'in' ? 'จำนวนผู้เข้าพัก (คน)' : 'จำนวนผู้ย้ายออก (คน)'} required>
+            <Input
+              type="number"
+              min={1}
+              step={1}
+              value={occQty}
+              onChange={(e) => setOccQty(e.target.value)}
+              placeholder="เช่น 12"
+              aria-label="จำนวนคน"
+            />
+          </Field>
+          <Field label="หมายเหตุ">
+            <Textarea
+              value={occNote}
+              onChange={(e) => setOccNote(e.target.value)}
+              rows={3}
+              placeholder={
+                occDialog?.mode === 'in'
+                  ? 'เช่น รับโอนจากพื้นที่ประสบภัย / ครอบครัวใหม่ 4 หลัง'
+                  : 'เช่น กลับภูมิลำเนา / ย้ายไปศูนย์พักพิงอื่น'
+              }
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setOccDialog(null)}>ยกเลิก</Button>
+            <Button
+              onClick={submitOcc}
+              disabled={occSaving}
+              className={occDialog?.mode === 'in' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-orange-600 hover:bg-orange-700'}
+            >
+              {occSaving ? 'กำลังบันทึก...' : occDialog?.mode === 'in' ? 'ยืนยันรับเข้า' : 'ยืนยันย้ายออก'}
+            </Button>
+          </div>
         </div>
       </FormDialog>
 

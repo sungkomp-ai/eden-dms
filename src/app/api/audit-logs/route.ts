@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic'
 
 const cfg: CrudConfig = {
   model: 'auditLog',
+  meta: false, // AuditLog ไม่มี meta fields กลาง
   module: 'admin',
   fields: [],
   searchFields: ['userName', 'detail'],

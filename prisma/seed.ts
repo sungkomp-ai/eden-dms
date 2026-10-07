@@ -4,8 +4,15 @@
  * รัน: bun prisma/seed.ts
  */
 import { PrismaClient } from '@prisma/client'
+import { scryptSync, randomBytes } from 'crypto'
 
 const db = new PrismaClient()
+
+/** scrypt hash แบบเดียวกับ src/lib/auth.ts (salt:hash) */
+function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString('hex')
+  return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`
+}
 
 async function main() {
   console.log('🌱 Seeding EDEN DMS (ฤดูน้ำหลาก ก.ย.–ต.ค. 2569)...')
@@ -210,7 +217,72 @@ async function main() {
     { firstName: 'บุษราคัม', lastName: 'พรหมมา', gender: 'female', age: 35, status: 'missing', incidentId: flood.id, lastSeenLocation: 'ร้านค้าบริเวณตลาดต้นลำเจียก', lastSeenAt: dt('2026-10-02T14:00:00+07:00') },
     { firstName: 'ชาติชาย', lastName: 'อินทรกำแหง', gender: 'male', age: 48, status: 'evacuated', incidentId: flood.id, shelterId: sh2.id, phone: '086-777-8899' },
   ]
-  for (const p of personSeed) await db.person.create({ data: p })
+  const createdPersons: { id: string; firstName: string; status: string }[] = []
+  for (const p of personSeed) {
+    const row = await db.person.create({ data: p })
+    createdPersons.push({ id: row.id, firstName: row.firstName, status: row.status })
+  }
+
+  // ===== PersonContact + PersonEvent (P1: G3 — ช่องทางติดต่อ + presence trail) =====
+  const P = (name: string) => createdPersons.find((x) => x.firstName === name)
+  const kanyanat = P('กัญญาณัฐ')
+  const jiranan = P('จีรนันท์')
+  const malee = P('มาลี')
+  const suda = P('สุดา')
+  const pranom = P('ประนอม')
+
+  await db.personContact.createMany({
+    data: [
+      ...(kanyanat ? [
+        { personId: kanyanat.id, type: 'mobile', value: '081-800-0001', priority: 1, isEmergency: false },
+        { personId: kanyanat.id, type: 'line', value: 'kanyanat.s', priority: 2, note: 'LINE ของตัวเอง' },
+      ] : []),
+      ...(jiranan ? [
+        { personId: jiranan.id, type: 'mobile', value: '081-900-1122', priority: 1, isEmergency: true, note: 'เบอร์ของผู้สูญหาย' },
+        { personId: jiranan.id, type: 'phone', value: '02-377-8899', priority: 2, note: 'ญาติ (น้องสาว) — นางจันทร์แก้ว' },
+      ] : []),
+      ...(malee ? [
+        { personId: malee.id, type: 'mobile', value: '081-222-3344', priority: 1, isEmergency: true, note: 'เบอร์ล่าสุดที่ติดต่อได้' },
+        { personId: malee.id, type: 'phone', value: '053-401-220', priority: 2, note: 'บ้านลูกสาว อ.สันทราย' },
+      ] : []),
+    ],
+  })
+
+  await db.personEvent.createMany({
+    data: [
+      // trail ผู้สูญหาย: มาลี
+      ...(malee ? [
+        { personId: malee.id, status: 'missing', location: 'ตลาดวโรรส อ.เมือง จ.เชียงใหม่', observer: 'ญาติ (ลูกสาว) แจ้งที่ EOC', occurredAt: dt('2026-10-02T13:00:00+07:00'), note: 'ญาติแจ้งหายหลังติดต่อไม่ได้ตั้งแต่เที่ยง', createdBy: 'นายสมศักดิ์ เข็มทอง' },
+        { personId: malee.id, status: 'sighted', location: 'ปากซอยหมู่บ้าน ต.ช้างเผือก', observer: 'อาสาสมัคร วอล.เชียงใหม่', occurredAt: dt('2026-10-03T09:30:00+07:00'), note: 'มีคนพบเห็นผู้สูงอายุลักษณะคล้ายกันเดินหาทางแห้ง', createdBy: 'นายสมศักดิ์ เข็มทอง' },
+      ] : []),
+      // trail พบตัวแล้ว: สุดา
+      ...(suda ? [
+        { personId: suda.id, status: 'missing', location: 'บ้านต.แม่เหียะ', observer: 'ญาติแจ้ง', occurredAt: dt('2026-09-30T10:00:00+07:00'), createdBy: 'นายสมศักดิ์ เข็มทอง' },
+        { personId: suda.id, status: 'found', location: 'บ้านญาติ อ.สันทราย', observer: 'ทีมค้นหา ปภ.เชียงใหม่', occurredAt: dt('2026-10-01T15:20:00+07:00'), note: 'พบที่บ้านญาติ สภาพปลอดภัย', createdBy: 'นายสมศักดิ์ เข็มทอง' },
+        { personId: suda.id, status: 'evacuated', location: 'ศูนย์พักพิงวัดเกตุการาม', observer: 'เจ้าหน้าที่ศูนย์พักพิง', occurredAt: dt('2026-10-01T18:00:00+07:00'), note: 'ย้ายเข้าพักพิงพร้อมญาติ 2 คน', createdBy: 'นายสมศักดิ์ เข็มทอง' },
+      ] : []),
+      // trail เสียชีวิต: ประนอม
+      ...(pranom ? [
+        { personId: pranom.id, status: 'missing', location: 'ที่จอดรถหมู่บ้าน แขวงคลองจันทร์', observer: 'ครอบครัว', occurredAt: dt('2026-09-26T21:00:00+07:00'), createdBy: 'นายธนากร รุ่งโรจน์' },
+        { personId: pranom.id, status: 'found', location: 'จุดเดียวกัน', observer: 'ทีมกู้ภัย', occurredAt: dt('2026-09-27T08:10:00+07:00'), note: 'พบไม่มีสติในรถยนต์ที่จอดในน้ำ', createdBy: 'นายธนากร รุ่งโรจน์' },
+        { personId: pranom.id, status: 'deceased', location: 'โรงพยาบาลบึงกุ่ม', observer: 'แพทย์ รพ.บึงกุ่ม', occurredAt: dt('2026-09-27T09:40:00+07:00'), note: 'เสียชีวิตจากไฟดูด', createdBy: 'นายธนากร รุ่งโรจน์' },
+      ] : []),
+    ],
+  })
+
+  // ===== ShelterOccupancy (P1: G4 — ประวัติเข้า-ออกพักพิง) =====
+  await db.shelterOccupancy.createMany({
+    data: [
+      { shelterId: sh1.id, delta: 700, count: 700, note: 'รับอพยพชุดแรกจาก ต.ช้างเผือก', createdBy: 'นายสมศักดิ์ เข็มทอง', createdAt: dt('2026-09-29T16:00:00+07:00') },
+      { shelterId: sh1.id, delta: 200, count: 900, note: 'รถพุ่มเช้า 3 คันจาก ต.แม่เหียะ', createdBy: 'นายสมศักดิ์ เข็มทอง', createdAt: dt('2026-10-01T09:30:00+07:00') },
+      { shelterId: sh1.id, delta: 100, count: 1000, note: 'รับโยกย้ายจากศูนย์พักพิงเวียงสาบางส่วน', createdBy: 'นางสาวกมลวรรณ ทองสุข', createdAt: dt('2026-10-02T14:00:00+07:00') },
+      { shelterId: sh1.id, delta: -36, count: 964, note: 'กลับบ้านตามสถิติประจำวัน (น้ำลด)', createdBy: 'นายสมศักดิ์ เข็มทอง', createdAt: dt('2026-10-03T17:00:00+07:00') },
+      { shelterId: shB1.id, delta: 600, count: 600, note: 'อพยพจาก แขวงบางกะปิ คืนวันน้ำท่วมหนัก', createdBy: 'นายธนากร รุ่งโรจน์', createdAt: dt('2026-09-26T23:30:00+07:00') },
+      { shelterId: shB1.id, delta: 420, count: 1020, note: 'รับเพิ่มจากเขตบึงกุ่ม + หน่วยเรือยาง', createdBy: 'นายธนากร รุ่งโรจน์', createdAt: dt('2026-09-27T10:00:00+07:00') },
+      { shelterId: shB1.id, delta: 100, count: 1120, note: 'ย้ายเข้าเพิ่ม 1 ครอบครัวขยาย (รวม 12 คน) + คืนที่พ้นกำหนด', createdBy: 'นายธนากร รุ่งโรจน์', createdAt: dt('2026-09-28T18:00:00+07:00') },
+    ],
+  })
+
 
   // ===== Warehouses + Inventory (แต่ละคลังมีหน่วยงานเจ้าของชัดเจน) =====
   const w1 = await db.warehouse.create({ data: { name: 'คลังสินค้ากลางจังหวัดเชียงใหม่', purpose: 'อาหารและน้ำดื่ม', address: 'อ.เมือง จ.เชียงใหม่', manager: 'นายอภิชาติ สินอุดม', phone: '053-300-100', capacity: 5000, organizationId: or3.id } })
@@ -243,6 +315,38 @@ async function main() {
       { name: 'น้ำมันเบนซิน 91', category: 'fuel', type: 'ถังพร้อมปั๊มมือ', size: '20 ลิตร', unit: 'ถัง', quantity: 36, minQuantity: 20, warehouseId: w3.id },
       { name: 'ชุดบรรเทาทุกข์', category: 'relief', type: 'ชุด', size: '5 คน/3 วัน', unit: 'ชุด', quantity: 260, minQuantity: 120, warehouseId: w1.id },
       { name: 'จอบ เสียม เลื่อย', category: 'tools', type: 'ชุดพกพา', size: '3 ชิ้น/ชุด', unit: 'ชุด', quantity: 130, minQuantity: 60, warehouseId: w3.id },
+    ],
+  })
+
+  // ===== StockMovement (P1: G4 — ledger รับ/จ่าย/โอน/ปรับ ตัวอย่าง) =====
+  const items = await db.inventoryItem.findMany({ orderBy: { createdAt: 'asc' } })
+  const I = (name: string, wid: string) => items.find((x) => x.name === name && x.warehouseId === wid)
+  const sandbag = I('ถุงทรายกันน้ำ', w4.id)
+  const waterBkk = I('น้ำดื่มบรรจุขวด', w4.id)
+  const rice = I('ถุงข้าวสาร', w1.id)
+  const medkit = I('ชุดยาปฐมพยาบาล', w2.id)
+  const tent = I('เต็นท์พักพิง', w3.id)
+  await db.stockMovement.createMany({
+    data: [
+      ...(sandbag ? [
+        { itemId: sandbag.id, type: 'receive', quantity: 3000, fromWarehouseId: null, toWarehouseId: w4.id, reference: 'ใบส่งของ ปภ. 2568/0912', note: 'รับจากโรงงานส่งกลาง', createdBy: 'นายวุฒิชัย ช่วยชาติ', createdAt: dt('2026-09-25T08:00:00+07:00') },
+        { itemId: sandbag.id, type: 'issue', quantity: 1200, fromWarehouseId: w4.id, toWarehouseId: null, reference: 'เบิก กทม. เขตบึงกุ่ม', note: 'ก่อแนวกั้นน้ำ ซอยเสรีไทย', createdBy: 'นายธนากร รุ่งโรจน์', createdAt: dt('2026-09-26T07:00:00+07:00') },
+        { itemId: sandbag.id, type: 'issue', quantity: 600, fromWarehouseId: w4.id, toWarehouseId: null, reference: 'เบิก ทหารพลาธิการ', note: 'สนับสนุนจุดตั้งแรงงานสวน', createdBy: 'นายวุฒิชัย ช่วยชาติ', createdAt: dt('2026-09-28T13:30:00+07:00') },
+      ] : []),
+      ...(waterBkk ? [
+        { itemId: waterBkk.id, type: 'receive', quantity: 1500, toWarehouseId: w4.id, reference: 'บริจาค บริษัท ปตท.', note: 'โครงการน้ำใจน้ำท่วม', createdBy: 'นายวุฒิชัย ช่วยชาติ', createdAt: dt('2026-09-27T10:00:00+07:00') },
+        { itemId: waterBkk.id, type: 'transfer', quantity: 300, fromWarehouseId: w4.id, toWarehouseId: w1.id, reference: 'โอนเสริมภาคเหนือ', note: 'เชียงใหม่ขาดแคลนหลังผู้อพยพเพิ่ม', createdBy: 'นางสาวกมลวรรณ ทองสุข', createdAt: dt('2026-09-30T09:00:00+07:00') },
+      ] : []),
+      ...(rice ? [
+        { itemId: rice.id, type: 'receive', quantity: 800, toWarehouseId: w1.id, reference: 'องค์การตลาดเพื่อเกษตรกร', note: 'ข้าวสารสนับสนุน 4 ตัน', createdBy: 'นายอภิชาติ สินอุดม', createdAt: dt('2026-09-29T11:00:00+07:00') },
+        { itemId: rice.id, type: 'issue', quantity: 350, fromWarehouseId: w1.id, toWarehouseId: null, reference: 'จ่ายศูนย์พักพิงยุพราช', note: 'ตามอัตรา 3 มื้อ/คน/วัน', createdBy: 'นายสมศักดิ์ เข็มทอง', createdAt: dt('2026-10-01T08:00:00+07:00') },
+      ] : []),
+      ...(medkit ? [
+        { itemId: medkit.id, type: 'adjust', quantity: 4, fromWarehouseId: w2.id, toWarehouseId: null, reference: 'ปรับปรุงสต๊อก Q3', note: 'ตรวจนับพบขาด 4 ชุด (ชำรุด)', createdBy: 'นางสาววรรณา ดีปัญญา', createdAt: dt('2026-09-30T16:00:00+07:00') },
+      ] : []),
+      ...(tent ? [
+        { itemId: tent.id, type: 'transfer', quantity: 12, fromWarehouseId: w3.id, toWarehouseId: w1.id, reference: 'โอนเต็นท์เสริมจุดพักพิง', note: 'ศูนย์ราชการสันทรายต้องการเพิ่ม', createdBy: 'นายพีรพงษ์ จันทร์ดี', createdAt: dt('2026-10-02T10:30:00+07:00') },
+      ] : []),
     ],
   })
 
@@ -288,12 +392,12 @@ async function main() {
   // ===== Users (admin) =====
   await db.user.createMany({
     data: [
-      { email: 'admin@eden.go.th', name: 'ผู้ดูแลระบบกลาง', role: 'admin', lastLoginAt: new Date(Date.now() - 3600000) },
-      { email: 'coordinator@eden.go.th', name: 'นางสาวกมลวรรณ ทองสุข', role: 'coordinator', lastLoginAt: new Date(Date.now() - 7200000) },
-      { email: 'officer.cm@eden.go.th', name: 'นายสมศักดิ์ เข็มทอง', role: 'officer', lastLoginAt: new Date(Date.now() - 86400000) },
-      { email: 'officer.bkk@eden.go.th', name: 'นายธนากร รุ่งโรจน์', role: 'officer', lastLoginAt: new Date(Date.now() - 5400000) },
-      { email: 'volunteer1@eden.go.th', name: 'นายประเสริฐ ชัยมงคล', role: 'volunteer', lastLoginAt: new Date(Date.now() - 172800000) },
-      { email: 'volunteer2@eden.go.th', name: 'นางสาวสุนิสา แก้วใส', role: 'volunteer', status: 'inactive' },
+      { email: 'admin@eden.go.th', name: 'ผู้ดูแลระบบกลาง', role: 'admin', passwordHash: hashPassword('Admin@2568'), lastLoginAt: new Date(Date.now() - 3600000) },
+      { email: 'coordinator@eden.go.th', name: 'นางสาวกมลวรรณ ทองสุข', role: 'coordinator', passwordHash: hashPassword('Coord@2568'), lastLoginAt: new Date(Date.now() - 7200000) },
+      { email: 'officer.cm@eden.go.th', name: 'นายสมศักดิ์ เข็มทอง', role: 'officer', passwordHash: hashPassword('Officer@2568'), lastLoginAt: new Date(Date.now() - 86400000) },
+      { email: 'officer.bkk@eden.go.th', name: 'นายธนากร รุ่งโรจน์', role: 'officer', passwordHash: hashPassword('Officer@2568'), lastLoginAt: new Date(Date.now() - 5400000) },
+      { email: 'volunteer1@eden.go.th', name: 'นายประเสริฐ ชัยมงคล', role: 'volunteer', passwordHash: hashPassword('Vol@2568'), lastLoginAt: new Date(Date.now() - 172800000) },
+      { email: 'volunteer2@eden.go.th', name: 'นางสาวสุนิสา แก้วใส', role: 'volunteer', status: 'inactive', passwordHash: hashPassword('Vol@2568') },
     ],
   })
 

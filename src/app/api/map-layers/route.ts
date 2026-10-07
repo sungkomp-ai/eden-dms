@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server'
+import { requireUser, isResponse } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { ok, badRequest, serverError, audit } from '@/lib/api'
 
@@ -36,9 +37,11 @@ function normalizeToFeatureCollection(input: unknown): { features: RawFeature[] 
   throw new Error('รูปแบบ GeoJSON ไม่ถูกต้อง — ต้องเป็น FeatureCollection หรือ Feature')
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
   try {
-    const layers = await db.mapLayer.findMany({ orderBy: { createdAt: 'desc' } })
+    const layers = await db.mapLayer.findMany({ where: { deleted: false }, orderBy: { createdAt: 'desc' } })
     return ok(layers)
   } catch (e) {
     return serverError(e)
@@ -46,6 +49,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
   try {
     const body = (await req.json()) as {
       name?: string
@@ -87,9 +92,9 @@ export async function POST(req: NextRequest) {
     if (dataStr.length > 12_000_000) return badRequest('ข้อมูลใหญ่เกิน 12MB')
 
     const layer = await db.mapLayer.create({
-      data: { name, color, sourceType, sourceUrl, data: dataStr, featureCount, visible: true },
+      data: { name, color, sourceType, sourceUrl, data: dataStr, featureCount, visible: true, createdBy: auth.name, updatedBy: auth.name },
     })
-    await audit('create', 'map', `นำเข้าชั้นข้อมูลแผนที่ "${name}" (${featureCount} features)`)
+    await audit('create', 'map', `นำเข้าชั้นข้อมูลแผนที่ "${name}" (${featureCount} features)`, auth.name)
     return ok(layer, 201)
   } catch (e) {
     return serverError(e)

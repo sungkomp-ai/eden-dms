@@ -3,7 +3,7 @@
 import * as React from 'react'
 import {
   UserPlus, Pencil, Trash2, Users, History, Settings2, Info,
-  ShieldCheck, CircleCheck, Database, Server, Code2,
+  ShieldCheck, CircleCheck, Database, Server, Code2, KeyRound, ShieldAlert,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -44,7 +44,7 @@ interface AuditLog {
 
 interface Setting { id: string; key: string; value: string }
 
-const emptyUserForm = { name: '', email: '', role: 'officer', status: 'active' }
+const emptyUserForm = { name: '', email: '', role: 'officer', status: 'active', password: '' }
 
 // 12 โมดูลของระบบ (ดัดแปลงจาก Sahana Eden controllers)
 const SYSTEM_MODULES: { key: string; label: string; origin: string }[] = [
@@ -66,6 +66,11 @@ export default function AdminModule() {
   const { toast } = useToast()
   const confirm = useConfirmDelete()
 
+  // ผู้ใช้ปัจจุบัน (จาก /api/auth/me) — บังคับสิทธิ์ระดับ UI (API บังคับจริงที่ /api/users)
+  const me = useFetch<{ user: { id: string; name: string; role: string } }>('/api/auth/me')
+  const isAdmin = me.data?.user?.role === 'admin'
+  const isSelf = (u: User) => me.data?.user?.id === u.id
+
   // ===== Tab: ผู้ใช้ =====
   const [userQ, setUserQ] = React.useState('')
   const [logQ, setLogQ] = React.useState('')
@@ -73,6 +78,11 @@ export default function AdminModule() {
   const [editing, setEditing] = React.useState<User | null>(null)
   const [form, setForm] = React.useState(emptyUserForm)
   const [saving, setSaving] = React.useState(false)
+  // รีเซ็ตรหัสผ่าน (Dialog)
+  const [resetOpen, setResetOpen] = React.useState(false)
+  const [resetTarget, setResetTarget] = React.useState<User | null>(null)
+  const [resetPw, setResetPw] = React.useState('')
+  const [resetSaving, setResetSaving] = React.useState(false)
 
   const users = useFetch<User[]>('/api/users')
   const logs = useFetch<AuditLog[]>('/api/audit-logs')
@@ -100,7 +110,7 @@ export default function AdminModule() {
 
   const openEdit = (u: User) => {
     setEditing(u)
-    setForm({ name: u.name, email: u.email, role: u.role ?? 'officer', status: u.status ?? 'active' })
+    setForm({ name: u.name, email: u.email, role: u.role ?? 'officer', status: u.status ?? 'active', password: '' })
     setDialogOpen(true)
   }
 
@@ -109,15 +119,23 @@ export default function AdminModule() {
       toast({ title: 'กรุณากรอกชื่อและอีเมล', variant: 'destructive' })
       return
     }
+    if (!editing && form.password.length < 8) {
+      toast({ title: 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร', variant: 'destructive' })
+      return
+    }
     setSaving(true)
     try {
-      const body = { name: form.name.trim(), email: form.email.trim(), role: form.role, status: form.status }
       if (editing) {
-        await apiSend(`/api/users/${editing.id}`, 'PUT', body)
-        toast({ title: 'บันทึกสำเร็จ', description: `แก้ไขผู้ใช้ "${body.name}" เรียบร้อยแล้ว` })
+        // แก้ไข: ชื่อ/บทบาท/สถานะ (อีเมลใช้เข้าสู่ระบบ — ไม่เปลี่ยน, รหัสผ่านใช้ปุ่ม "รีเซ็ตรหัสผ่าน")
+        await apiSend(`/api/users/${editing.id}`, 'PUT', {
+          name: form.name.trim(), role: form.role, status: form.status,
+        })
+        toast({ title: 'บันทึกสำเร็จ', description: `แก้ไขผู้ใช้ "${form.name.trim()}" เรียบร้อยแล้ว` })
       } else {
-        await apiSend('/api/users', 'POST', body)
-        toast({ title: 'เพิ่มผู้ใช้สำเร็จ', description: `สร้างบัญชี "${body.name}" เรียบร้อยแล้ว` })
+        await apiSend('/api/users', 'POST', {
+          name: form.name.trim(), email: form.email.trim(), role: form.role, status: form.status, password: form.password,
+        })
+        toast({ title: 'เพิ่มผู้ใช้สำเร็จ', description: `สร้างบัญชี "${form.name.trim()}" เรียบร้อยแล้ว` })
       }
       setDialogOpen(false)
       users.refetch()
@@ -125,6 +143,31 @@ export default function AdminModule() {
       toast({ title: 'เกิดข้อผิดพลาด', description: e instanceof Error ? e.message : 'ไม่สามารถบันทึกได้', variant: 'destructive' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const openReset = (u: User) => {
+    setResetTarget(u)
+    setResetPw('')
+    setResetOpen(true)
+  }
+
+  const submitReset = async () => {
+    if (!resetTarget) return
+    if (resetPw.length < 8) {
+      toast({ title: 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร', variant: 'destructive' })
+      return
+    }
+    setResetSaving(true)
+    try {
+      await apiSend(`/api/users/${resetTarget.id}`, 'PUT', { password: resetPw })
+      toast({ title: 'รีเซ็ตรหัสผ่านสำเร็จ', description: `ตั้งรหัสผ่านใหม่ให้ "${resetTarget.name}" เรียบร้อยแล้ว` })
+      setResetOpen(false)
+      users.refetch()
+    } catch (e) {
+      toast({ title: 'รีเซ็ตรหัสผ่านไม่สำเร็จ', description: e instanceof Error ? e.message : undefined, variant: 'destructive' })
+    } finally {
+      setResetSaving(false)
     }
   }
 
@@ -164,11 +207,19 @@ export default function AdminModule() {
               </p>
               <div className="flex items-center gap-2">
                 <SearchInput value={userQ} onChange={setUserQ} placeholder="ค้นหาชื่อ/อีเมล..." />
-                <Button onClick={openCreate} className="bg-emerald-600 hover:bg-emerald-700 text-white">
-                  <UserPlus className="h-4 w-4" /> เพิ่มผู้ใช้
-                </Button>
+                {isAdmin && (
+                  <Button onClick={openCreate} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                    <UserPlus className="h-4 w-4" /> เพิ่มผู้ใช้
+                  </Button>
+                )}
               </div>
             </div>
+            {!me.loading && !isAdmin && (
+              <div className="mx-4 mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800" role="note">
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>เฉพาะผู้ดูแลระบบ — คุณสามารถดูรายชื่อผู้ใช้ได้เท่านั้น การเพิ่ม/แก้ไข/ลบบัญชีต้องใช้บัญชีผู้ดูแลระบบ</span>
+              </div>
+            )}
 
             {users.error ? (
               <ErrorState message={users.error} onRetry={users.refetch} />
@@ -198,14 +249,21 @@ export default function AdminModule() {
                         <TableCell><StatusBadge options={USER_STATUS} value={u.status} /></TableCell>
                         <TableCell className="whitespace-nowrap text-slate-500">{fmtDateTime(u.lastLoginAt)}</TableCell>
                         <TableCell>
-                          <div className="flex items-center justify-end gap-1">
-                            <Button variant="ghost" size="icon" aria-label={`แก้ไข ${u.name}`} onClick={() => openEdit(u)} className="h-7 w-7 text-slate-500 hover:text-slate-800">
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="icon" aria-label={`ลบ ${u.name}`} onClick={() => removeUser(u)} className="h-7 w-7 text-red-500 hover:bg-red-50 hover:text-red-600">
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
+                          {isAdmin ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <Button variant="ghost" size="icon" aria-label={`รีเซ็ตรหัสผ่านของ ${u.name}`} title="รีเซ็ตรหัสผ่าน" onClick={() => openReset(u)} className="h-7 w-7 text-slate-500 hover:text-slate-800">
+                                <KeyRound className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button variant="ghost" size="icon" aria-label={`แก้ไข ${u.name}`} onClick={() => openEdit(u)} className="h-7 w-7 text-slate-500 hover:text-slate-800">
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button variant="ghost" size="icon" aria-label={`ลบ ${u.name}`} title={isSelf(u) ? 'ไม่สามารถลบบัญชีตัวเองได้' : undefined} disabled={isSelf(u)} onClick={() => removeUser(u)} className="h-7 w-7 text-red-500 hover:bg-red-50 hover:text-red-600">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-300" aria-hidden>—</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -358,8 +416,15 @@ export default function AdminModule() {
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="เช่น นางสาวกมลวรรณ ทองสุข" />
           </Field>
           <Field label="อีเมล" required>
-            <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@eden.go.th" />
+            <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@eden.go.th" disabled={!!editing} />
+            {editing && <p className="text-xs text-slate-400">อีเมลใช้เข้าสู่ระบบ — แก้ไขไม่ได้</p>}
           </Field>
+          {!editing && (
+            <Field label="รหัสผ่าน" required>
+              <Input type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="อย่างน้อย 8 ตัวอักษร" minLength={8} />
+              <p className="text-xs text-slate-400">ใช้เข้าสู่ระบบ — อย่างน้อย 8 ตัวอักษร</p>
+            </Field>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <Field label="บทบาท">
               <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
@@ -386,6 +451,27 @@ export default function AdminModule() {
             <Button variant="outline" onClick={() => setDialogOpen(false)}>ยกเลิก</Button>
             <Button onClick={submit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 text-white">
               {saving ? 'กำลังบันทึก...' : editing ? 'บันทึกการแก้ไข' : 'เพิ่มผู้ใช้'}
+            </Button>
+          </div>
+        </div>
+      </FormDialog>
+
+      {/* ===== ฟอร์มรีเซ็ตรหัสผ่าน ===== */}
+      <FormDialog
+        open={resetOpen}
+        onOpenChange={setResetOpen}
+        title={`รีเซ็ตรหัสผ่าน: ${resetTarget?.name ?? ''}`}
+        description="ตั้งรหัสผ่านใหม่ให้บัญชีนี้ — ผู้ใช้ต้องเข้าสู่ระบบด้วยรหัสผ่านใหม่ครั้งถัดไป"
+      >
+        <div className="grid gap-4">
+          <Field label="รหัสผ่านใหม่" required>
+            <Input type="password" autoComplete="new-password" value={resetPw} onChange={(e) => setResetPw(e.target.value)} placeholder="อย่างน้อย 8 ตัวอักษร" minLength={8} />
+            <p className="text-xs text-slate-400">อย่างน้อย 8 ตัวอักษร</p>
+          </Field>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setResetOpen(false)}>ยกเลิก</Button>
+            <Button onClick={submitReset} disabled={resetSaving} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+              {resetSaving ? 'กำลังบันทึก...' : 'รีเซ็ตรหัสผ่าน'}
             </Button>
           </div>
         </div>

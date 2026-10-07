@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server'
+import { requireUser, isResponse } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { ok, badRequest, serverError, audit } from '@/lib/api'
 
@@ -13,6 +14,8 @@ export const dynamic = 'force-dynamic'
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
   try {
     const { id } = await params
     const body = (await req.json()) as { visible?: boolean; name?: string; color?: string }
@@ -23,20 +26,23 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (typeof body.color === 'string' && COLOR_RE.test(body.color)) data.color = body.color
 
     if (Object.keys(data).length === 0) return badRequest('ไม่มีข้อมูลที่ต้องการอัปเดต')
+    data.updatedBy = auth.name
 
     const layer = await db.mapLayer.update({ where: { id }, data })
-    await audit('update', 'map', `อัปเดตชั้นข้อมูลแผนที่ "${layer.name}"`)
+    await audit('update', 'map', `อัปเดตชั้นข้อมูลแผนที่ "${layer.name}"`, auth.name)
     return ok(layer)
   } catch (e) {
     return serverError(e)
   }
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
   try {
     const { id } = await params
-    const layer = await db.mapLayer.delete({ where: { id } })
-    await audit('delete', 'map', `ลบชั้นข้อมูลแผนที่ "${layer.name}"`)
+    const layer = await db.mapLayer.update({ where: { id }, data: { deleted: true, updatedBy: auth.name } })
+    await audit('delete', 'map', `ลบชั้นข้อมูลแผนที่ "${layer.name}" (soft-delete)`, auth.name)
     return ok({ success: true })
   } catch (e) {
     return serverError(e)

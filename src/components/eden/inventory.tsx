@@ -3,13 +3,18 @@
 // ทุกคลังมีหน่วยงานเจ้าของ (Organization) เชื่อมโยงกันทั้งระบบ
 import * as React from 'react'
 import {
-  Boxes, PackagePlus, Minus, Plus, Pencil, Trash2, Warehouse,
+  Boxes, PackagePlus, PackageMinus, Minus, Plus, Pencil, Trash2, Warehouse,
   TriangleAlert, PackageSearch, PackageCheck, Building2, Phone, PlusCircle,
+  ArrowLeftRight, ArrowRight, SlidersHorizontal, History,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
@@ -18,10 +23,12 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { useToast } from '@/hooks/use-toast'
-import { ITEM_CATEGORIES, fmtNum, fmtDate } from '@/lib/constants'
+import { ITEM_CATEGORIES, fmtNum, fmtDate, fmtDateTime } from '@/lib/constants'
+import { cn } from '@/lib/utils'
 import {
   apiSend, useFetch, ModuleHeader, StatCard, StatusBadge, SearchInput,
   EmptyState, TableSkeleton, ErrorState, FormDialog, Field, useConfirmDelete,
+  RefreshButton,
 } from './shared'
 
 interface InvItem {
@@ -59,6 +66,29 @@ interface Warehouse {
 const emptyItemForm = { name: '', category: 'food', type: '', size: '', unit: 'ชิ้น', quantity: '0', minQuantity: '0', warehouseId: '', expiryDate: '' }
 const emptyWarehouseForm = { name: '', purpose: '', organizationId: '', manager: '', phone: '', capacity: '0', address: '' }
 
+// ===== P1 (G4) — movement ledger: ประเภทรายการเคลื่อนไหวสต๊อก =====
+type MovementType = 'receive' | 'issue' | 'transfer' | 'adjust'
+
+const MOVEMENT_TYPES: { value: MovementType; label: string; badge: string }[] = [
+  { value: 'receive', label: 'รับเข้า', badge: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
+  { value: 'issue', label: 'เบิกจ่าย', badge: 'bg-orange-100 text-orange-800 border-orange-200' },
+  { value: 'transfer', label: 'โอนย้าย', badge: 'bg-slate-100 text-slate-600 border-slate-200' },
+  { value: 'adjust', label: 'ปรับยอด', badge: 'bg-amber-100 text-amber-800 border-amber-200' },
+]
+
+interface StockMovementRow {
+  id: string
+  type: string
+  quantity: number
+  reference: string | null
+  note: string | null
+  createdBy: string | null
+  createdAt: string
+  item: { name: string; unit: string }
+  fromWarehouse: { name: string } | null
+  toWarehouse: { name: string } | null
+}
+
 export default function InventoryModule() {
   const { toast } = useToast()
   const confirm = useConfirmDelete()
@@ -70,6 +100,15 @@ export default function InventoryModule() {
   const [saving, setSaving] = React.useState(false)
   const [adjusting, setAdjusting] = React.useState<string | null>(null)
 
+  // ===== P1 (G4): เคลื่อนไหวสต๊อก (movement ledger) =====
+  const [mvItem, setMvItem] = React.useState<InvItem | null>(null)
+  const [mvType, setMvType] = React.useState<MovementType>('receive')
+  const [mvQty, setMvQty] = React.useState('')
+  const [mvWarehouseId, setMvWarehouseId] = React.useState('')
+  const [mvRef, setMvRef] = React.useState('')
+  const [mvNote, setMvNote] = React.useState('')
+  const [mvSaving, setMvSaving] = React.useState(false)
+
   // ===== คลัง: ฟอร์มเพิ่ม/แก้ไขคลัง + หน่วยงานเจ้าของ =====
   const [whDialogOpen, setWhDialogOpen] = React.useState(false)
   const [editingWh, setEditingWh] = React.useState<Warehouse | null>(null)
@@ -79,6 +118,12 @@ export default function InventoryModule() {
   const items = useFetch<InvItem[]>('/api/inventory')
   const warehouses = useFetch<Warehouse[]>('/api/warehouses')
   const orgs = useFetch<{ id: string; name: string; type: string }[]>('/api/organizations')
+  const movements = useFetch<StockMovementRow[]>('/api/inventory/movements')
+
+  const recentMovements = React.useMemo(
+    () => (movements.data ?? []).slice(0, 50),
+    [movements.data],
+  )
 
   const filtered = React.useMemo(() => {
     const list = items.data ?? []
@@ -257,6 +302,79 @@ export default function InventoryModule() {
     }, `คลัง "${w.name}"`)
   }
 
+  // ===== P1 (G4): handlers เคลื่อนไหวสต๊อก =====
+  const openMovement = (it: InvItem, type: MovementType) => {
+    setMvItem(it)
+    setMvType(type)
+    setMvQty('')
+    setMvWarehouseId('')
+    setMvRef('')
+    setMvNote('')
+  }
+
+  const mvTypeMeta = MOVEMENT_TYPES.find((t) => t.value === mvType)
+  const mvQtyNum = Number(mvQty)
+  const mvQtyValid =
+    mvQty.trim() !== '' && Number.isFinite(mvQtyNum) && Number.isInteger(mvQtyNum)
+    && (mvType === 'adjust' ? mvQtyNum !== 0 : mvQtyNum > 0)
+
+  const mvPreview = React.useMemo(() => {
+    if (!mvItem || !mvQtyValid) return null
+    if (mvType === 'issue') return mvItem.quantity - mvQtyNum
+    if (mvType === 'transfer') return mvItem.quantity
+    return mvItem.quantity + mvQtyNum // receive / adjust
+  }, [mvItem, mvType, mvQtyNum, mvQtyValid])
+
+  const submitMovement = async () => {
+    if (!mvItem) return
+    const item = mvItem
+    if (!mvQtyValid) {
+      toast({
+        title: mvType === 'adjust'
+          ? 'กรุณากรอกจำนวนปรับยอด (จำนวนเต็ม ไม่ใช่ 0 — ติดลบเพื่อลดยอด)'
+          : 'กรุณากรอกจำนวน (จำนวนเต็มมากกว่า 0)',
+        variant: 'destructive',
+      })
+      return
+    }
+    if (mvType === 'transfer' && !mvWarehouseId) {
+      toast({ title: 'กรุณาเลือกคลังปลายทาง', variant: 'destructive' })
+      return
+    }
+    setMvSaving(true)
+    try {
+      const res = await apiSend('/api/inventory/movements', 'POST', {
+        itemId: item.id,
+        type: mvType,
+        quantity: mvQtyNum,
+        ...(mvType === 'transfer' ? { toWarehouseId: mvWarehouseId } : {}),
+        ...(mvRef.trim() ? { reference: mvRef.trim() } : {}),
+        ...(mvNote.trim() ? { note: mvNote.trim() } : {}),
+      }) as { movement: StockMovementRow; quantity: number; lowStockAlert?: boolean }
+      toast({
+        title: `บันทึก${mvTypeMeta?.label ?? 'เคลื่อนไหวสต๊อก'}สำเร็จ`,
+        description: `${item.name}: คงเหลือ ${fmtNum(res.quantity)} ${item.unit} หลังรายการ`,
+      })
+      if (res.lowStockAlert) {
+        toast({
+          title: '⚠️ สต๊อกต่ำกว่า/เท่าจุดขั้นต่ำ',
+          description: 'สร้างฉบับร่างแจ้งเตือนแล้ว — ตรวจสอบและส่งได้ในโมดูลแจ้งเตือน',
+        })
+      }
+      setMvItem(null)
+      items.refetch()
+      movements.refetch()
+    } catch (e) {
+      toast({
+        title: 'บันทึกไม่สำเร็จ',
+        description: e instanceof Error ? e.message : 'เกิดข้อผิดพลาด',
+        variant: 'destructive',
+      })
+    } finally {
+      setMvSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <ModuleHeader
@@ -284,6 +402,7 @@ export default function InventoryModule() {
         <TabsList>
           <TabsTrigger value="items" className="gap-1.5"><Boxes className="h-4 w-4" /> รายการสิ่งของ</TabsTrigger>
           <TabsTrigger value="warehouses" className="gap-1.5"><Warehouse className="h-4 w-4" /> คลังทั้งหมด</TabsTrigger>
+          <TabsTrigger value="movements" className="gap-1.5"><History className="h-4 w-4" /> ประวัติการเคลื่อนไหว</TabsTrigger>
         </TabsList>
 
         {/* ===== Tab: สินค้า ===== */}
@@ -389,6 +508,28 @@ export default function InventoryModule() {
                                 <Plus className="h-3.5 w-3.5" />
                               </Button>
                               <span className="mx-1 h-5 w-px bg-slate-200" aria-hidden />
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="outline" size="sm"
+                                    className="h-7 gap-1 px-2 text-xs"
+                                    aria-label={`เคลื่อนไหวสต๊อกของ ${it.name}`}
+                                  >
+                                    <ArrowLeftRight className="h-3.5 w-3.5" /> เคลื่อนไหว
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-40">
+                                  {MOVEMENT_TYPES.map((t) => (
+                                    <DropdownMenuItem key={t.value} onClick={() => openMovement(it, t.value)} className="gap-2">
+                                      {t.value === 'receive' && <PackagePlus className="h-4 w-4 text-emerald-600" />}
+                                      {t.value === 'issue' && <PackageMinus className="h-4 w-4 text-orange-600" />}
+                                      {t.value === 'transfer' && <ArrowLeftRight className="h-4 w-4 text-slate-500" />}
+                                      {t.value === 'adjust' && <SlidersHorizontal className="h-4 w-4 text-amber-600" />}
+                                      {t.label}
+                                    </DropdownMenuItem>
+                                  ))}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                               <Button variant="ghost" size="icon" aria-label={`แก้ไข ${it.name}`} onClick={() => openEdit(it)} className="h-7 w-7 text-slate-500 hover:text-slate-800">
                                 <Pencil className="h-3.5 w-3.5" />
                               </Button>
@@ -482,6 +623,83 @@ export default function InventoryModule() {
               </div>
             </div>
           )}
+        </TabsContent>
+
+        {/* ===== Tab: ประวัติการเคลื่อนไหวสต๊อก (P1: G4 movement ledger) ===== */}
+        <TabsContent value="movements">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-slate-500">
+                รายการล่าสุด <span className="font-semibold text-slate-700">{recentMovements.length}</span> รายการ
+                (จากทั้งหมด {fmtNum(movements.data?.length ?? 0)} รายการ)
+              </p>
+              <RefreshButton onClick={movements.refetch} loading={movements.loading} />
+            </div>
+            {movements.error ? (
+              <ErrorState message={movements.error} onRetry={movements.refetch} />
+            ) : movements.loading && !movements.data ? (
+              <TableSkeleton rows={5} />
+            ) : recentMovements.length === 0 ? (
+              <EmptyState message="ยังไม่มีประวัติการเคลื่อนไหวสต๊อก" />
+            ) : (
+              <div className="max-h-72 overflow-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:bg-slate-400 [scrollbar-width:thin] [scrollbar-color:theme(colors.slate.300)_transparent]">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-slate-50">
+                      <TableHead>เวลา</TableHead>
+                      <TableHead>ชนิด</TableHead>
+                      <TableHead>สินค้า</TableHead>
+                      <TableHead>จำนวน</TableHead>
+                      <TableHead>จาก → ถึง</TableHead>
+                      <TableHead>อ้างอิง</TableHead>
+                      <TableHead>โดย</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {recentMovements.map((m) => {
+                      const meta = MOVEMENT_TYPES.find((t) => t.value === m.type)
+                      const sign = m.type === 'receive'
+                        ? '+'
+                        : m.type === 'issue'
+                          ? '-'
+                          : m.type === 'adjust' && m.quantity > 0 ? '+' : ''
+                      const qtyColor = m.type === 'receive'
+                        ? 'text-emerald-700'
+                        : m.type === 'issue'
+                          ? 'text-orange-700'
+                          : m.type === 'adjust'
+                            ? (m.quantity > 0 ? 'text-emerald-700' : 'text-red-700')
+                            : 'text-slate-700'
+                      return (
+                        <TableRow key={m.id}>
+                          <TableCell className="whitespace-nowrap text-xs text-slate-500">{fmtDateTime(m.createdAt)}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={cn('whitespace-nowrap', meta?.badge ?? 'bg-slate-100 text-slate-600 border-slate-200')}>
+                              {meta?.label ?? m.type}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="font-medium text-slate-800">{m.item?.name ?? '-'}</TableCell>
+                          <TableCell className="whitespace-nowrap">
+                            <span className={cn('font-semibold', qtyColor)}>
+                              {sign}{fmtNum(m.quantity)}
+                            </span>{' '}
+                            <span className="text-xs text-slate-500">{m.item?.unit ?? ''}</span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-slate-600">
+                            {m.fromWarehouse?.name ?? '—'} <ArrowRight className="inline h-3 w-3 text-slate-400" /> {m.toWarehouse?.name ?? '—'}
+                          </TableCell>
+                          <TableCell className="max-w-40 truncate text-slate-500" title={m.reference ?? undefined}>
+                            {m.reference ?? '-'}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-slate-500">{m.createdBy ?? '-'}</TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
         </TabsContent>
       </Tabs>
 
@@ -600,6 +818,80 @@ export default function InventoryModule() {
             <Button variant="outline" onClick={() => setWhDialogOpen(false)}>ยกเลิก</Button>
             <Button onClick={submitWh} disabled={savingWh} className="bg-teal-600 hover:bg-teal-700 text-white">
               {savingWh ? 'กำลังบันทึก...' : editingWh ? 'บันทึกการแก้ไข' : 'เพิ่มคลัง'}
+            </Button>
+          </div>
+        </div>
+      </FormDialog>
+
+      {/* ===== P1 (G4): ฟอร์มเคลื่อนไหวสต๊อก (รับเข้า/เบิกจ่าย/โอนย้าย/ปรับยอด) ===== */}
+      <FormDialog
+        open={!!mvItem}
+        onOpenChange={(o) => { if (!o) setMvItem(null) }}
+        title={`เคลื่อนไหวสต๊อก — ${mvTypeMeta?.label ?? ''}`}
+        description={
+          mvItem
+            ? `${mvItem.name} · คงเหลือ ${fmtNum(mvItem.quantity)} ${mvItem.unit}${mvItem.warehouse ? ` · คลัง ${mvItem.warehouse.name}` : ''}`
+            : undefined
+        }
+      >
+        <div className="grid gap-4">
+          <Field label="ประเภทรายการ" required>
+            <Select value={mvType} onValueChange={(v) => setMvType(v as MovementType)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {MOVEMENT_TYPES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label={mvType === 'adjust' ? 'จำนวนปรับยอด (บวก = เพิ่ม / ลบ = ลด)' : 'จำนวน'} required>
+            <Input
+              type="number"
+              step={1}
+              min={mvType === 'adjust' ? undefined : 1}
+              value={mvQty}
+              onChange={(e) => setMvQty(e.target.value)}
+              placeholder={mvType === 'adjust' ? 'เช่น -5 หรือ 20' : 'เช่น 100'}
+              aria-label="จำนวน"
+            />
+          </Field>
+          {mvType === 'transfer' && (
+            <Field label="คลังปลายทาง" required>
+              <Select value={mvWarehouseId || 'none'} onValueChange={(v) => setMvWarehouseId(v === 'none' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="เลือกคลังปลายทาง" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" disabled>เลือกคลังปลายทาง</SelectItem>
+                  {(warehouses.data ?? []).filter((w) => w.id !== mvItem?.warehouseId).map((w) => (
+                    <SelectItem key={w.id} value={w.id}>
+                      {w.name}{w.organization ? ` — ${w.organization.name}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {(warehouses.data ?? []).filter((w) => w.id !== mvItem?.warehouseId).length === 0 && (
+                <p className="text-xs text-red-600">ไม่มีคลังอื่นให้โอนย้าย — เพิ่มคลังในแท็บ "คลังทั้งหมด" ก่อน</p>
+              )}
+            </Field>
+          )}
+          <Field label="เอกสารอ้างอิง / ผู้เบิก">
+            <Input value={mvRef} onChange={(e) => setMvRef(e.target.value)} placeholder="เลขที่เอกสาร / ผู้เบิก / ผู้บริจาค" />
+          </Field>
+          <Field label="หมายเหตุ">
+            <Textarea value={mvNote} onChange={(e) => setMvNote(e.target.value)} rows={2} placeholder="โน้ตเพิ่มเติม (ถ้ามี)" />
+          </Field>
+          {mvPreview !== null && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              คงเหลือ {fmtNum(mvItem?.quantity ?? 0)} {mvItem?.unit} → หลังรายการ{' '}
+              <span className={cn('font-semibold', mvPreview < 0 ? 'text-red-600' : 'text-slate-900')}>
+                {fmtNum(mvPreview)} {mvItem?.unit}
+              </span>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="outline" onClick={() => setMvItem(null)}>ยกเลิก</Button>
+            <Button onClick={submitMovement} disabled={mvSaving} className="bg-emerald-600 hover:bg-emerald-700 text-white">
+              {mvSaving ? 'กำลังบันทึก...' : 'บันทึกรายการ'}
             </Button>
           </div>
         </div>

@@ -43,9 +43,48 @@ interface StatsKpis {
   }
 }
 
+export interface CurrentUser {
+  id: string
+  email: string
+  name: string
+  role: string
+  status: string
+  lastLoginAt?: string | null
+}
+
 export default function Page() {
   const [active, setActive] = React.useState<ModuleKey>('dashboard')
+  const [user, setUser] = React.useState<CurrentUser | null>(null)
+  const [authState, setAuthState] = React.useState<'checking' | 'ok'>('checking')
   const { data } = useFetch<StatsKpis>('/api/stats')
+
+  // ตรวจ session จริงกับเซิร์ฟเวอร์ (P1: G1) — ไม่ผ่าน → ส่งไป /login
+  React.useEffect(() => {
+    let cancelled = false
+    fetch('/api/auth/me')
+      .then(async (res) => {
+        if (!res.ok) throw new Error('unauthorized')
+        const json = (await res.json()) as { user: CurrentUser }
+        if (!cancelled) {
+          setUser(json.user)
+          setAuthState('ok')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) window.location.href = '/login'
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function handleLogout() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } finally {
+      window.location.href = '/login'
+    }
+  }
 
   const kpis = {
     activeIncidents: data?.totals?.activeIncidents ?? 0,
@@ -54,8 +93,19 @@ export default function Page() {
     draftAlerts: data?.totals?.draftAlerts ?? 0,
   }
 
+  if (authState === 'checking') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-3 text-slate-500">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-300 border-t-emerald-600" />
+          <p className="text-sm">กำลังตรวจสอบการเข้าสู่ระบบ...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <Shell active={active} onNavigate={setActive} headerTitle={TITLES[active]} kpis={kpis}>
+    <Shell active={active} onNavigate={setActive} headerTitle={TITLES[active]} kpis={kpis} user={user} onLogout={handleLogout}>
       {active === 'dashboard' && <DashboardModule onNavigate={(key) => setActive(key as ModuleKey)} />}
       {active === 'assistant' && <AIAssistantModule />}
       {active === 'incidents' && <IncidentsModule />}

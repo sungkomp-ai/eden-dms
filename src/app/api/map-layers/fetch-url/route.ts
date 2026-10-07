@@ -9,6 +9,8 @@ export const dynamic = 'force-dynamic'
 // ==========================================
 
 export async function POST(req: NextRequest) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
   try {
     const body = (await req.json()) as { url?: string }
     const url = typeof body.url === 'string' ? body.url.trim() : ''

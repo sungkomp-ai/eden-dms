@@ -2,6 +2,12 @@
 // Modern reimplementation of Sahana Eden (eden-core)
 // Schema ครอบคลุม 12 โมดูล: dashboard, incidents(sit), sitreps(cms), persons(pr),
 // organizations(org), hr(hrm), shelters, inventory, requests, map(gis), alerts(msg), admin
+//
+// P1 upgrade (ปิด Gap G1–G4 ตาม docs/ARCHITECTURE-COMPARISON.md §8):
+// - Meta fields กลางทุก data model: deleted (soft-delete) / uuid / createdBy / updatedBy  (G2)
+// - User.passwordHash — login จริง (G1)
+// - Person.dateOfBirth / emergencyContact + PersonContact + PersonEvent (presence trail) (G3)
+// - ShelterOccupancy + StockMovement — movement ledger (G4)
 
 generator client {
   provider = "prisma-client-js"
@@ -26,6 +32,10 @@ model Location {
   children  Location[] @relation("LocationTree")
   incidents Incident[]
   shelters  Shelter[]
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
@@ -57,8 +67,12 @@ model Incident {
   persons        Person[]
   aidRequests    AidRequest[]
   alerts         Alert[]
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  deleted      Boolean  @default(false)
+  uuid         String   @unique @default(uuid())
+  createdBy    String?
+  updatedBy    String?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 
   @@map("incidents")
 }
@@ -74,8 +88,12 @@ model IncidentReport {
   content    String
   status     String   @default("published") // draft | published
   author     String   @default("ผู้ปฏิบัติงาน")
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  deleted      Boolean  @default(false)
+  uuid         String   @unique @default(uuid())
+  createdBy    String?
+  updatedBy    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("incident_reports")
 }
@@ -90,6 +108,8 @@ model Person {
   nationalId       String? // เลขบัตรประชาชน
   gender           String    @default("unknown") // male | female | other | unknown
   age              Int?
+  dateOfBirth      DateTime? // วันเกิด — ไม่หมดอายุตามเวลา (P1: G3)
+  emergencyContact String? // ผู้ติดต่อฉุกเฉิน (ชื่อ + ความสัมพันธ์ + เบอร์)
   phone            String?
   address          String?
   status           String    @default("safe") // missing | found | safe | injured | deceased | evacuated
@@ -100,10 +120,58 @@ model Person {
   shelterId        String?
   shelter          Shelter?  @relation(fields: [shelterId], references: [id])
   notes            String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  contacts         PersonContact[]
+  events           PersonEvent[]
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("persons")
+}
+
+// ==========================================
+// PR component — ช่องทางติดต่อรายบุคคล (แทน phone ตัวเดียว — P1: G3)
+// ==========================================
+model PersonContact {
+  id          String  @id @default(cuid())
+  personId    String
+  person      Person  @relation(fields: [personId], references: [id], onDelete: Cascade)
+  type        String  @default("phone") // phone | mobile | email | line | facebook | other
+  value       String
+  priority    Int     @default(2) // 1 = ใช้ติดต่อหลัก, 2 = สำรอง, 3 = อื่น ๆ
+  isEmergency Boolean @default(false) // เบอร์/ช่องทางฉุกเฉิน
+  note        String?
+  deleted   Boolean  @default(false)
+  uuid      String   @unique @default(uuid())
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("person_contacts")
+}
+
+// ==========================================
+// PR component — presence trail: ประวัติสถานะการพบตัว (P1: G3, เทียบ pr_presence ของ Eden)
+// ==========================================
+model PersonEvent {
+  id         String   @id @default(cuid())
+  personId   String
+  person     Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  status     String   // missing | sighted | found | safe | injured | hospitalized | deceased | evacuated | transferred
+  note       String?
+  location   String? // สถานที่พบ/เหตุการณ์ (ข้อความ)
+  observer   String? // ใครพบ/รายงาน
+  occurredAt DateTime @default(now()) // เวลาเหตุการณ์
+  deleted   Boolean  @default(false)
+  uuid      String   @unique @default(uuid())
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@map("person_events")
 }
 
 // ==========================================
@@ -123,8 +191,12 @@ model Organization {
   description   String?
   resources     HumanResource[]
   warehouses    Warehouse[]
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
   @@map("organizations")
 }
@@ -144,8 +216,12 @@ model HumanResource {
   skills         String? // comma-separated เช่น "แพทย์,ปฐมพยาบาล"
   status         String        @default("available") // available | assigned | on_mission | unavailable
   baseLocation   String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
   @@map("human_resources")
 }
@@ -169,10 +245,32 @@ model Shelter {
   lat              Float?
   lng              Float?
   persons          Person[]
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  occupancyLogs    ShelterOccupancy[]
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("shelters")
+}
+
+// ==========================================
+// Shelter ledger — ประวัติผู้อพยพเข้า-ออก (P1: G4, เทียบ cr_shelter_occupancy)
+// currentOccupancy = ค่าล่าสุด ซึ่ง derive จาก log
+// ==========================================
+model ShelterOccupancy {
+  id        String   @id @default(cuid())
+  shelterId String
+  shelter   Shelter  @relation(fields: [shelterId], references: [id], onDelete: Cascade)
+  delta     Int // + ย้ายเข้า / - ย้ายออก
+  count     Int // ยอดรวมหลังรายการนี้
+  note      String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@map("shelter_occupancy_logs")
 }
 
 // ==========================================
@@ -189,8 +287,14 @@ model Warehouse {
   organizationId String?         // หน่วยงานเจ้าของคลัง
   organization   Organization?   @relation(fields: [organizationId], references: [id])
   items          InventoryItem[]
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  movementsFrom  StockMovement[] @relation("FromWarehouse")
+  movementsTo    StockMovement[] @relation("ToWarehouse")
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
   @@map("warehouses")
 }
@@ -207,10 +311,37 @@ model InventoryItem {
   warehouseId  String?
   warehouse    Warehouse? @relation(fields: [warehouseId], references: [id])
   expiryDate   DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  movements    StockMovement[]
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@map("inventory_items")
+}
+
+// ==========================================
+// Inventory ledger — รับ/จ่าย/โอน/ปรับสต๊อก (P1: G4, เทียบ inv_send/inv_recv ของ Eden)
+// quantity ปัจจุบันของ item ต้อง update พร้อมกันใน $transaction เดียวกัน
+// ==========================================
+model StockMovement {
+  id              String         @id @default(cuid())
+  itemId          String
+  item            InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  type            String // receive | issue | transfer | adjust
+  quantity        Int // จำนวนเสมอเป็นบวก — ทิศทางดูจาก type
+  fromWarehouseId String?
+  fromWarehouse   Warehouse?     @relation("FromWarehouse", fields: [fromWarehouseId], references: [id])
+  toWarehouseId   String?
+  toWarehouse     Warehouse?     @relation("ToWarehouse", fields: [toWarehouseId], references: [id])
+  reference       String? // เลขที่เอกสาร / ผู้เบิก / ผู้บริจาค
+  note            String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@map("stock_movements")
 }
 
 // ==========================================
@@ -230,8 +361,12 @@ model AidRequest {
   incidentId    String?
   incident      Incident? @relation(fields: [incidentId], references: [id])
   assignedTo    String? // ชื่อหน่วยงานที่รับผิดชอบ
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@map("aid_requests")
 }
@@ -248,8 +383,12 @@ model MapLayer {
   color        String   @default("#14b8a6") // สีสัญลักษณ์ของชั้นข้อมูล
   visible      Boolean  @default(true)
   featureCount Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("map_layers")
 }
@@ -269,8 +408,12 @@ model Alert {
   sentAt      DateTime?
   incidentId  String?
   incident    Incident? @relation(fields: [incidentId], references: [id])
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  deleted     Boolean  @default(false)
+  uuid        String   @unique @default(uuid())
+  createdBy   String?
+  updatedBy   String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@map("alerts")
 }
@@ -283,10 +426,11 @@ model User {
   email       String    @unique
   name        String
   role        String    @default("officer") // admin | coordinator | officer | volunteer
+  passwordHash String? // scrypt (salt:hash) — login จริง (P1: G1)
   status      String    @default("active") // active | inactive
   lastLoginAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@map("users")
 }
