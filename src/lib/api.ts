@@ -66,7 +66,99 @@ function authOrResponse(req: NextRequest): SessionUser | NextResponse {
   return requireUser(req)
 }
 
-/** GET list with ?q= search */
+// ---------- CSV export (P2: G8 บางส่วน — รายงานไทยเปิดใน Excel ได้ด้วย UTF-8 BOM) ----------
+
+const isScalarCell = (v: unknown) =>
+  v === null ||
+  v === undefined ||
+  typeof v === 'string' ||
+  typeof v === 'number' ||
+  typeof v === 'boolean' ||
+  v instanceof Date
+
+/** แปลงค่าเซลล์: Date → ISO string, null/undefined → '' ที่เหลือ → String() */
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (value instanceof Date) return value.toISOString()
+  return String(value)
+}
+
+/** escape ตาม RFC 4180 — ค่าที่มี , " \n \r ให้ครอบ "" และเปลี่ยน " เป็น "" */
+function csvEscape(value: string): string {
+  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+}
+
+/**
+ * Flatten 1 ระดับสำหรับ relation include — เช่น { shelter: { name } } → คอลัมน์ "shelter.name"
+ * object/array ที่ลึกกว่า 1 ระดับ (ค่าภายในไม่ใช่ scalar) → ข้ามคอลัมน์นั้น
+ */
+function flattenCsvRow(row: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(row)) {
+    if (value === null || value === undefined) {
+      out[key] = ''
+    } else if (isScalarCell(value)) {
+      out[key] = csvCell(value)
+    } else if (typeof value === 'object' && !Array.isArray(value)) {
+      const entries = Object.entries(value as Record<string, unknown>)
+      if (entries.length > 0 && entries.every(([, v]) => isScalarCell(v))) {
+        for (const [k, v] of entries) out[`${key}.${k}`] = csvCell(v)
+      }
+      // ลึก >1 ระดับ หรือ array → ข้าม
+    }
+  }
+  return out
+}
+
+/**
+ * สร้าง CSV response พร้อม UTF-8 BOM (Excel อ่านภาษาไทยไม่เพี้ยน)
+ * - คอลัมน์ = union keys ของแถว (เรียงตามลำดับที่พบในแถวแรกก่อน)
+ * - ไม่มีแถว → ตอบ CSV ว่าง (เหลือแค่ BOM)
+ * - filename ต้องเป็น ASCII ล้วน: eden-{module}-{YYYYMMDD}.csv
+ */
+export function toCsv(rows: Record<string, unknown>[], module: string): NextResponse {
+  const flat = rows.map((r) => flattenCsvRow(r))
+
+  // relation ที่ถูก flatten เป็น "rel.field" แล้ว — ตัดคอลัมน์ต้นทาง (จากแถวที่ค่า null) ทิ้ง ไม่ให้มีคอลัมน์ว่างซ้ำซ้อน
+  const flattenedRelations = new Set<string>()
+  for (const row of flat) {
+    for (const key of Object.keys(row)) {
+      const dot = key.indexOf('.')
+      if (dot > 0) flattenedRelations.add(key.slice(0, dot))
+    }
+  }
+
+  const headers: string[] = []
+  const seen = new Set<string>()
+  for (const row of flat) {
+    for (const key of Object.keys(row)) {
+      if (seen.has(key) || flattenedRelations.has(key)) continue
+      seen.add(key)
+      headers.push(key)
+    }
+  }
+
+  let body = '\uFEFF'
+  if (headers.length > 0) {
+    const lines = [headers.map(csvEscape).join(',')]
+    for (const row of flat) {
+      lines.push(headers.map((h) => csvEscape(row[h] ?? '')).join(','))
+    }
+    body += lines.join('\r\n') + '\r\n'
+  }
+
+  const now = new Date()
+  const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+  return new NextResponse(body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="eden-${module}-${ymd}.csv"`,
+    },
+  })
+}
+
+/** GET list with ?q= search; รองรับ ?format=csv → export ไฟล์รายงาน */
 export async function listHandler(req: NextRequest, cfg: CrudConfig) {
   const auth = authOrResponse(req)
   if (isResponse(auth)) return auth
@@ -86,6 +178,9 @@ export async function listHandler(req: NextRequest, cfg: CrudConfig) {
       include: cfg.include,
       orderBy: { [cfg.orderBy ?? 'createdAt']: 'desc' },
     })
+    if (url.searchParams.get('format') === 'csv') {
+      return toCsv(items as Record<string, unknown>[], cfg.module)
+    }
     return ok(items)
   } catch (e) {
     return serverError(e)

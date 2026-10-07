@@ -4,7 +4,7 @@
 import * as React from 'react'
 import {
   Plus, Pencil, Trash2, Eye, MapPin, Users, User, Activity, Skull,
-  CalendarDays, FileText, HeartHandshake, HeartPulse, Loader2, ClipboardList,
+  CalendarDays, FileText, HeartHandshake, HeartPulse, Loader2, ClipboardList, Download,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -222,6 +222,14 @@ export default function IncidentsModule() {
     }, `เหตุการณ์ "${inc.title}"`)
   }
 
+  // ส่งออก CSV — ใช้ filter ค้นหาปัจจุบัน (?q=) ร่วมกับ API ด้วย
+  const exportCsv = () => {
+    toast({ title: 'กำลังส่งออกไฟล์ CSV...', description: 'ไฟล์รายงานเหตุการณ์จะถูกดาวน์โหลด เปิดใน Excel ได้ทันที' })
+    const params = new URLSearchParams({ format: 'csv' })
+    if (search.trim()) params.set('q', search.trim())
+    window.open(`/api/incidents?${params.toString()}`, '_blank')
+  }
+
   return (
     <div className="space-y-6">
       {confirmDelete.dialog}
@@ -232,6 +240,9 @@ export default function IncidentsModule() {
         actions={
           <>
             <RefreshButton onClick={() => refetch()} loading={loading} />
+            <Button variant="outline" size="sm" className="h-9" onClick={exportCsv}>
+              <Download className="h-4 w-4" /> ส่งออก CSV
+            </Button>
             <Button onClick={openCreate} size="sm" className="h-9">
               <Plus className="h-4 w-4" /> รายงานเหตุการณ์ใหม่
             </Button>

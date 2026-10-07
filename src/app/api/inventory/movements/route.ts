@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireUser, isResponse, audit } from '@/lib/auth'
+import { toCsv } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
 
 /**
  * EDEN DMS — Stock movement ledger (P1: G4, เทียบ inv_recv/inv_send ของ Eden)
  * GET  /api/inventory/movements?itemId=&warehouseId=&type= — ประวัติล่าสุด 200 รายการ
+ *      ?format=csv — ส่งออกไฟล์รายงาน CSV (คอลัมน์ภาษาไทย เปิดใน Excel ได้)
  * POST /api/inventory/movements — รับเข้า(receive)/เบิกจ่าย(issue)/โอนย้าย(transfer)/ปรับยอด(adjust)
  *   ทุกประเภทอัปเดต item.quantity + สร้าง movement ใน $transaction เดียวกัน
  *   และสร้าง Alert (ฉบับร่าง) อัตโนมัติเมื่อสต๊อกหลังรายการต่ำกว่า/เท่าจุดขั้นต่ำ
@@ -67,6 +69,24 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: 'desc' },
       take: 200,
     })
+
+    // CSV export — flatten ชื่อ relation (ไม่แสดง id เปล่า ๆ) คอลัมน์: เวลา/ชนิด/สินค้า/จำนวน/จาก/ถึง/อ้างอิง/โดย
+    if (url.searchParams.get('format') === 'csv') {
+      return toCsv(
+        movements.map((m) => ({
+          'เวลา': m.createdAt,
+          'ชนิด': TYPE_LABEL[m.type as MovementType] ?? m.type,
+          'สินค้า': m.item?.name ?? '',
+          'จำนวน': m.quantity,
+          'จาก': m.fromWarehouse?.name ?? '',
+          'ถึง': m.toWarehouse?.name ?? '',
+          'อ้างอิง': m.reference ?? '',
+          'โดย': m.createdBy ?? '',
+        })),
+        'inventory-movements',
+      )
+    }
+
     return NextResponse.json(movements)
   } catch (e) {
     console.error('[API inventory movements GET]', e)

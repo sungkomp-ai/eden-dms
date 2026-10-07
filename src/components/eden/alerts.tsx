@@ -2,7 +2,7 @@
 // EDEN DMS — โมดูลระบบแจ้งเตือนภัย (alerts / msg)
 import * as React from 'react'
 import {
-  Info, TriangleAlert, Siren, Bell, Send, Pencil, Trash2, FileEdit, CalendarClock, SendHorizonal,
+  Info, TriangleAlert, Siren, Bell, Send, Pencil, Trash2, FileEdit, CalendarClock, SendHorizonal, Loader2, RotateCcw,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,6 +39,45 @@ interface Alert {
 
 interface IncidentLite { id: string; code: string; title: string }
 
+// ===== Outbox รายผู้รับ (delivery pipeline — เทียบ msg_outbox ของ Eden) =====
+interface OutboxRow {
+  id: string
+  channel: string
+  target: string
+  status: string // queued | sent | failed
+  retries: number
+  error?: string | null
+  sentAt?: string | null
+  createdAt: string
+}
+
+interface OutboxSummary { total: number; sent: number; failed: number; queued: number }
+
+interface OutboxResp {
+  alert: Alert
+  outbox: OutboxRow[]
+  summary: OutboxSummary
+}
+
+const channelTone: Record<string, string> = {
+  app: 'border-teal-200 bg-teal-50 text-teal-700',
+  email: 'border-violet-200 bg-violet-50 text-violet-700',
+  sms: 'border-orange-200 bg-orange-50 text-orange-700',
+  broadcast: 'border-slate-200 bg-slate-100 text-slate-700',
+}
+
+const outboxStatusTone: Record<string, string> = {
+  sent: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  failed: 'border-red-200 bg-red-50 text-red-700',
+  queued: 'border-amber-200 bg-amber-50 text-amber-700',
+}
+
+const outboxStatusLabel: Record<string, string> = {
+  sent: 'ส่งแล้ว',
+  failed: 'ล้มเหลว',
+  queued: 'รอส่ง',
+}
+
 const emptyForm = {
   title: '', message: '', channel: 'broadcast', severity: 'info',
   audience: 'all', status: 'draft', scheduledAt: '', incidentId: '',
@@ -62,6 +101,14 @@ export default function AlertsModule() {
   const [form, setForm] = React.useState(emptyForm)
   const [saving, setSaving] = React.useState(false)
   const [busyRow, setBusyRow] = React.useState<string | null>(null)
+
+  // สถานะของ Dialog ส่งการแจ้งเตือน & สถานะรายผู้รับ (outbox)
+  const [sendFor, setSendFor] = React.useState<Alert | null>(null)
+  const [sendOpen, setSendOpen] = React.useState(false)
+  const [sending, setSending] = React.useState(false)
+  const [retrying, setRetrying] = React.useState(false)
+  const outbox = useFetch<OutboxResp>(sendFor ? `/api/alerts/${sendFor.id}/outbox` : null)
+  const outboxSummary = outbox.data?.summary ?? null
 
   const alerts = useFetch<Alert[]>('/api/alerts')
   const incidents = useFetch<IncidentLite[]>('/api/incidents')
@@ -171,6 +218,67 @@ export default function AlertsModule() {
     }, `การแจ้งเตือน "${a.title}"`)
   }
 
+  // ===== Delivery pipeline: ส่ง + ติดตามรายผู้รับ =====
+  const openSend = (a: Alert) => {
+    setSendFor(a)
+    setSendOpen(true)
+  }
+
+  // หลัง send/retry สำเร็จ: อัปเดต outbox ใน dialog + refetch รายการ + toast สรุปผล
+  const applyOutboxResult = (res: OutboxResp, beforeFailed?: number) => {
+    outbox.setData(res)
+    setSendFor(res.alert)
+    alerts.refetch()
+    const s = res.summary
+    if (s.total > 0 && s.failed === 0) {
+      toast({
+        title: `ส่งถึงผู้รับครบ ${s.total} รายการ`,
+        description: `"${res.alert.title}" ถูกส่งสำเร็จทุกช่องทาง`,
+        className: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      })
+    } else if (beforeFailed !== undefined) {
+      const recovered = Math.max(0, beforeFailed - s.failed)
+      toast({
+        title: `ลองใหม่สำเร็จเพิ่ม ${recovered} รายการ`,
+        description: s.failed > 0 ? `ยังล้มเหลว ${s.failed} รายการ — กดลองส่งใหม่ได้อีกครั้ง` : undefined,
+        variant: 'destructive',
+      })
+    } else {
+      toast({
+        title: `ส่งสำเร็จ ${s.sent} จาก ${s.total} รายการ`,
+        description: `ล้มเหลว ${s.failed} รายการ — กด "ลองส่งใหม่" เพื่อส่งซ้ำเฉพาะรายการที่ล้มเหลว`,
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const doSend = async () => {
+    if (!sendFor) return
+    setSending(true)
+    try {
+      const res = await apiSend(`/api/alerts/${sendFor.id}/send`, 'POST') as unknown as OutboxResp
+      applyOutboxResult(res)
+    } catch (e) {
+      toast({ title: 'ส่งไม่สำเร็จ', description: e instanceof Error ? e.message : undefined, variant: 'destructive' })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const doRetry = async () => {
+    if (!sendFor) return
+    setRetrying(true)
+    const beforeFailed = outboxSummary?.failed ?? 0
+    try {
+      const res = await apiSend(`/api/alerts/${sendFor.id}/outbox`, 'POST', {}) as unknown as OutboxResp
+      applyOutboxResult(res, beforeFailed)
+    } catch (e) {
+      toast({ title: 'ลองส่งใหม่ไม่สำเร็จ', description: e instanceof Error ? e.message : undefined, variant: 'destructive' })
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <ModuleHeader
@@ -254,6 +362,14 @@ export default function AlertsModule() {
                         : `สร้างเมื่อ ${fmtDateTime(a.createdAt)}`}
                   </p>
                   <div className="flex items-center gap-1">
+                    <Button
+                      variant="outline" size="sm" disabled={busyRow === a.id}
+                      onClick={() => openSend(a)}
+                      aria-label={`ส่งและดูสถานะการส่งรายผู้รับของ ${a.title}`}
+                      className="h-8 gap-1.5 border-slate-200 px-3 text-xs text-slate-600 hover:bg-slate-50"
+                    >
+                      <Send className="h-3.5 w-3.5" /> ส่ง & สถานะ
+                    </Button>
                     {a.status !== 'sent' && (
                       <Button
                         size="sm" disabled={busyRow === a.id}
@@ -362,6 +478,115 @@ export default function AlertsModule() {
             </Button>
           </div>
         </div>
+      </FormDialog>
+
+      {/* ===== Dialog ส่งการแจ้งเตือน & สถานะการส่งรายผู้รับ (outbox) ===== */}
+      <FormDialog
+        open={sendOpen}
+        onOpenChange={(o) => { setSendOpen(o); if (!o) setSendFor(null) }}
+        wide
+        title="ส่งการแจ้งเตือน & สถานะการส่งรายผู้รับ"
+        description={sendFor ? `ติดตามการจัดส่ง "${sendFor.title}" แบบรายช่องทางรายผู้รับ` : undefined}
+      >
+        {sendFor && (
+          <div className="grid gap-4">
+            {/* ข้อมูลการแจ้งเตือน */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant="outline" className="whitespace-nowrap border-slate-200 bg-slate-50 text-slate-600">
+                ช่องทาง: {optLabel(ALERT_CHANNELS, sendFor.channel)}
+              </Badge>
+              <Badge variant="outline" className="whitespace-nowrap border-slate-200 bg-slate-50 text-slate-600">
+                ถึง: {optLabel(ALERT_AUDIENCES, sendFor.audience)}
+              </Badge>
+              <StatusBadge options={ALERT_SEVERITIES} value={sendFor.severity} />
+              <StatusBadge options={ALERT_STATUS} value={sendFor.status} />
+            </div>
+
+            {/* สรุปผลการส่ง */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-700">ทั้งหมด {outboxSummary?.total ?? 0}</Badge>
+              <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">สำเร็จ {outboxSummary?.sent ?? 0}</Badge>
+              <Badge variant="outline" className="border-red-200 bg-red-50 text-red-700">ล้มเหลว {outboxSummary?.failed ?? 0}</Badge>
+              <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">คิว {outboxSummary?.queued ?? 0}</Badge>
+            </div>
+
+            {/* ปุ่มดำเนินการ */}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={doSend} disabled={sending || retrying}
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                {sending ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" /> กำลังส่ง...</>
+                ) : (
+                  <><Send className="h-4 w-4" /> {sendFor.status === 'sent' ? 'ส่งซ้ำ' : 'ส่งการแจ้งเตือน'}</>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={doRetry}
+                disabled={sending || retrying || (outboxSummary?.failed ?? 0) === 0}
+                className="border-slate-200 text-slate-700 hover:bg-slate-50"
+              >
+                {retrying ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" /> กำลังลองส่งใหม่...</>
+                ) : (
+                  <><RotateCcw className="h-4 w-4" /> ลองส่งใหม่ (เฉพาะที่ล้มเหลว)</>
+                )}
+              </Button>
+            </div>
+
+            {/* ตาราง outbox รายผู้รับ */}
+            <div className="grid gap-1.5">
+              <p className="text-sm font-medium text-slate-700">คิวส่งรายผู้รับ</p>
+              <div className="max-h-72 overflow-y-auto rounded-lg border border-slate-100 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:bg-slate-400 [scrollbar-width:thin] [scrollbar-color:theme(colors.slate.300)_transparent]">
+                {outbox.loading ? (
+                  <div className="space-y-2 p-4">
+                    {Array.from({ length: 5 }).map((_, i) => (
+                      <div key={i} className="h-8 animate-pulse rounded bg-slate-100" />
+                    ))}
+                  </div>
+                ) : (outbox.data?.outbox.length ?? 0) === 0 ? (
+                  <p className="p-6 text-center text-sm text-slate-400">
+                    ยังไม่มีคิวส่ง — กด &quot;ส่งการแจ้งเตือน&quot; เพื่อสร้างคิวรายผู้รับ
+                  </p>
+                ) : (
+                  <table className="w-full table-fixed text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-medium text-slate-500">
+                      <tr>
+                        <th className="w-24 px-3 py-2 font-medium">ช่องทาง</th>
+                        <th className="px-3 py-2 font-medium">ผู้รับ</th>
+                        <th className="w-28 px-3 py-2 font-medium">สถานะ</th>
+                        <th className="w-32 px-3 py-2 font-medium">เวลาส่ง</th>
+                        <th className="hidden w-40 px-3 py-2 font-medium sm:table-cell">หมายเหตุ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(outbox.data?.outbox ?? []).map((r) => (
+                        <tr key={r.id} className="border-t border-slate-100">
+                          <td className="px-3 py-2">
+                            <Badge variant="outline" className={cn('whitespace-nowrap', channelTone[r.channel] ?? channelTone.broadcast)}>
+                              {optLabel(ALERT_CHANNELS, r.channel)}
+                            </Badge>
+                          </td>
+                          <td className="truncate px-3 py-2 text-slate-700" title={r.target}>{r.target}</td>
+                          <td className="px-3 py-2">
+                            <Badge variant="outline" className={cn('whitespace-nowrap', outboxStatusTone[r.status] ?? outboxStatusTone.queued)}>
+                              {outboxStatusLabel[r.status] ?? r.status}
+                            </Badge>
+                            {r.retries > 0 && <span className="ml-1 whitespace-nowrap text-[11px] text-slate-400">ลองใหม่ {r.retries}</span>}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500">{r.sentAt ? fmtDateTime(r.sentAt) : '—'}</td>
+                          <td className="hidden truncate px-3 py-2 text-xs text-red-600 sm:table-cell" title={r.error ?? undefined}>{r.error ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </FormDialog>
 
       {confirm.dialog}

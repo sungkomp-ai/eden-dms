@@ -4,7 +4,7 @@
 // P1: G3 — วันเกิด/ผู้ติดต่อฉุกเฉิน + ช่องทางติดต่อ (PersonContact) + presence trail (PersonEvent)
 import * as React from 'react'
 import {
-  Users, UserX, HeartPulse, TentTree, CheckCircle, Plus, Pencil, Trash2, Eye, MapPin, Phone,
+  Users, UserX, HeartPulse, TentTree, CheckCircle, Plus, Pencil, Trash2, Eye, MapPin, Phone, Download,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -408,15 +408,28 @@ export default function PersonsModule() {
       ? 'ยังไม่มีข้อมูลบุคคล — กดปุ่ม "ลงทะเบียนบุคคล" เพื่อเพิ่มรายการ'
       : 'ไม่พบบุคคลในสถานะนี้'
 
+  // ส่งออก CSV — ส่งคำค้นหาปัจจุบัน (?q=) ให้ API ด้วย (สถานะแท็บเป็นตัวกรองฝั่ง UI)
+  const exportCsv = () => {
+    toast({ title: 'กำลังส่งออกไฟล์ CSV...', description: 'ไฟล์รายงานทะเบียนบุคคลจะถูกดาวน์โหลด เปิดใน Excel ได้ทันที' })
+    const params = new URLSearchParams({ format: 'csv' })
+    if (q.trim()) params.set('q', q.trim())
+    window.open(`/api/persons?${params.toString()}`, '_blank')
+  }
+
   return (
     <div className="space-y-4">
       <ModuleHeader
         title="ทะเบียนบุคคล"
         description="ผู้ประสบภัย บุคคลสูญหาย และการติดตาม"
         actions={
-          <Button onClick={openCreate} className="bg-teal-600 hover:bg-teal-700">
-            <Plus className="h-4 w-4" /> ลงทะเบียนบุคคล
-          </Button>
+          <>
+            <Button variant="outline" size="sm" onClick={exportCsv}>
+              <Download className="h-4 w-4" /> ส่งออก CSV
+            </Button>
+            <Button onClick={openCreate} className="bg-teal-600 hover:bg-teal-700">
+              <Plus className="h-4 w-4" /> ลงทะเบียนบุคคล
+            </Button>
+          </>
         }
       />
 

@@ -5,7 +5,7 @@ import * as React from 'react'
 import {
   Boxes, PackagePlus, PackageMinus, Minus, Plus, Pencil, Trash2, Warehouse,
   TriangleAlert, PackageSearch, PackageCheck, Building2, Phone, PlusCircle,
-  ArrowLeftRight, ArrowRight, SlidersHorizontal, History,
+  ArrowLeftRight, ArrowRight, SlidersHorizontal, History, Download,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -375,6 +375,20 @@ export default function InventoryModule() {
     }
   }
 
+  // ส่งออก CSV — แท็บสินค้า: ส่งคำค้นหาปัจจุบัน (?q=) ให้ API ด้วย (ตัวกรองหมวดเป็นตัวกรองฝั่ง UI)
+  const exportItemsCsv = () => {
+    toast({ title: 'กำลังส่งออกไฟล์ CSV...', description: 'ไฟล์รายการสิ่งของจะถูกดาวน์โหลด เปิดใน Excel ได้ทันที' })
+    const params = new URLSearchParams({ format: 'csv' })
+    if (q.trim()) params.set('q', q.trim())
+    window.open(`/api/inventory?${params.toString()}`, '_blank')
+  }
+
+  // ส่งออก CSV — แท็บประวัติการเคลื่อนไหว: /api/inventory/movements?format=csv
+  const exportMovementsCsv = () => {
+    toast({ title: 'กำลังส่งออกไฟล์ CSV...', description: 'ไฟล์ประวัติการเคลื่อนไหวสต๊อกจะถูกดาวน์โหลด เปิดใน Excel ได้ทันที' })
+    window.open('/api/inventory/movements?format=csv', '_blank')
+  }
+
   return (
     <div className="space-y-6">
       <ModuleHeader
@@ -412,17 +426,22 @@ export default function InventoryModule() {
               <p className="text-sm text-slate-500">
                 พบ <span className="font-semibold text-slate-700">{filtered.length}</span> รายการ
               </p>
-              <Select value={category} onValueChange={setCategory}>
-                <SelectTrigger className="w-full sm:w-52" aria-label="กรองตามหมวดสินค้า">
-                  <SelectValue placeholder="ทุกหมวด" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">ทุกหมวดสินค้า</SelectItem>
-                  {ITEM_CATEGORIES.map((c) => (
-                    <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex shrink-0 items-center gap-2">
+                <Select value={category} onValueChange={setCategory}>
+                  <SelectTrigger className="w-full sm:w-52" aria-label="กรองตามหมวดสินค้า">
+                    <SelectValue placeholder="ทุกหมวด" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">ทุกหมวดสินค้า</SelectItem>
+                    {ITEM_CATEGORIES.map((c) => (
+                      <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button variant="outline" size="sm" onClick={exportItemsCsv}>
+                  <Download className="h-4 w-4" /> ส่งออก CSV
+                </Button>
+              </div>
             </div>
 
             {items.error ? (
@@ -633,7 +652,12 @@ export default function InventoryModule() {
                 รายการล่าสุด <span className="font-semibold text-slate-700">{recentMovements.length}</span> รายการ
                 (จากทั้งหมด {fmtNum(movements.data?.length ?? 0)} รายการ)
               </p>
-              <RefreshButton onClick={movements.refetch} loading={movements.loading} />
+              <div className="flex shrink-0 items-center gap-2">
+                <Button variant="outline" size="sm" onClick={exportMovementsCsv}>
+                  <Download className="h-4 w-4" /> ส่งออก CSV
+                </Button>
+                <RefreshButton onClick={movements.refetch} loading={movements.loading} />
+              </div>
             </div>
             {movements.error ? (
               <ErrorState message={movements.error} onRetry={movements.refetch} />

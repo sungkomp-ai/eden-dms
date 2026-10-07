@@ -4,7 +4,7 @@
 import * as React from 'react'
 import {
   Tent, DoorOpen, Users, BedDouble, Plus, Pencil, Trash2, Phone, User, MapPin, Sparkles,
-  History, UserPlus, UserMinus,
+  History, UserPlus, UserMinus, Download,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -289,6 +289,14 @@ export default function SheltersModule() {
 
   const overallTone = occupancyTone(stats.overallRate)
 
+  // ส่งออก CSV — ส่งคำค้นหาปัจจุบัน (?q=) ให้ API ด้วย (สถานะ statusFilter เป็นตัวกรองฝั่ง UI)
+  const exportCsv = () => {
+    toast({ title: 'กำลังส่งออกไฟล์ CSV...', description: 'ไฟล์รายงานศูนย์พักพิงจะถูกดาวน์โหลด เปิดใน Excel ได้ทันที' })
+    const params = new URLSearchParams({ format: 'csv' })
+    if (q.trim()) params.set('q', q.trim())
+    window.open(`/api/shelters?${params.toString()}`, '_blank')
+  }
+
   return (
     <div className="space-y-6">
       <ModuleHeader
@@ -297,6 +305,9 @@ export default function SheltersModule() {
         actions={
           <>
             <RefreshButton onClick={refetch} loading={loading} />
+            <Button variant="outline" size="sm" onClick={exportCsv}>
+              <Download className="h-4 w-4" /> ส่งออก CSV
+            </Button>
             <Button onClick={openAdd} className="bg-emerald-600 hover:bg-emerald-700">
               <Plus className="h-4 w-4" /> เพิ่มศูนย์พักพิง
             </Button>
@@ -351,14 +362,14 @@ export default function SheltersModule() {
       ) : filtered.length === 0 ? (
         <EmptyState message="ไม่พบศูนย์พักพิงที่ตรงกับเงื่อนไข" />
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid min-w-0 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((s) => {
             const rate = s.capacity > 0 ? Math.min(100, Math.round((s.currentOccupancy / s.capacity) * 100)) : 0
             const tone = occupancyTone(rate)
             return (
               <div
                 key={s.id}
-                className="flex flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md"
+                className="flex min-w-0 flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">

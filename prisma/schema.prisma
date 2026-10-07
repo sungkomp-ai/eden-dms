@@ -397,6 +397,7 @@ model MapLayer {
 // MSG — การแจ้งเตือน/สื่อสาร
 // ==========================================
 model Alert {
+  outbox      AlertOutbox[]
   id          String    @id @default(cuid())
   title       String
   message     String
@@ -416,6 +417,27 @@ model Alert {
   updatedAt DateTime  @updatedAt
 
   @@map("alerts")
+}
+
+// ==========================================
+// MSG component — Outbox รายผู้รับ (P2: G5, เทียบ msg_outbox ของ Eden)
+// delivery pipeline: สร้างคิวต่อช่องทางต่อผู้รับ แล้วจำลองการส่ง (sent/failed)
+// ==========================================
+model AlertOutbox {
+  id        String    @id @default(cuid())
+  alertId   String
+  alert     Alert     @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  channel   String    // app | email | sms | broadcast
+  target    String    // อีเมล/เบอร์/ชื่อประกาศ
+  status    String    @default("queued") // queued | sent | failed
+  retries   Int       @default(0)
+  error     String?
+  sentAt    DateTime?
+  createdBy String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("alert_outbox")
 }
 
 // ==========================================

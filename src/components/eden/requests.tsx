@@ -3,7 +3,7 @@
 import * as React from 'react'
 import {
   ClipboardList, Check, X, Play, CheckCircle2, Pencil, Trash2,
-  Hourglass, LoaderCircle, ListFilter,
+  Hourglass, LoaderCircle, ListFilter, Download,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -168,6 +168,14 @@ export default function RequestsModule() {
     }, `คำขอ ${r.requestCode}`)
   }
 
+  // ส่งออก CSV — ส่งคำค้นหาปัจจุบัน (?q=) ให้ API ด้วย (ตัวกรอง priority/status เป็นตัวกรองฝั่ง UI)
+  const exportCsv = () => {
+    toast({ title: 'กำลังส่งออกไฟล์ CSV...', description: 'ไฟล์รายงานคำขอความช่วยเหลือจะถูกดาวน์โหลด เปิดใน Excel ได้ทันที' })
+    const params = new URLSearchParams({ format: 'csv' })
+    if (q.trim()) params.set('q', q.trim())
+    window.open(`/api/requests?${params.toString()}`, '_blank')
+  }
+
   return (
     <div className="space-y-6">
       <ModuleHeader
@@ -176,6 +184,9 @@ export default function RequestsModule() {
         actions={
           <>
             <SearchInput value={q} onChange={setQ} placeholder="ค้นหารหัส/ผู้ขอ/รายละเอียด..." />
+            <Button variant="outline" size="sm" onClick={exportCsv}>
+              <Download className="h-4 w-4" /> ส่งออก CSV
+            </Button>
             <Button onClick={openCreate} className="bg-emerald-600 hover:bg-emerald-700 text-white">
               <ClipboardList className="h-4 w-4" /> ยื่นคำขอใหม่
             </Button>
