@@ -22,6 +22,7 @@ interface WebSource {
   url: string
   host: string
   snippet: string
+  date?: string | null
 }
 
 // ใช้ instance เดียวซ้ำทั้งโปรเซส (แนวปฏิบัติจาก skill: reuse SDK instance)
@@ -35,6 +36,49 @@ const BKK = 'Asia/Bangkok'
 function thDate(d: Date | null | undefined): string {
   if (!d) return '-'
   return new Date(d).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', timeZone: BKK })
+}
+
+const DATA_FILE_EXT_RE = /\.(csv|tsv|json|geojson|xlsx|xls)(\?|#|$)/i
+
+// ---------- อ่านเนื้อหาเว็บเพจจากลิงก์ในคำถาม (page_reader → fallback plain fetch) ----------
+async function readPageContext(url: string): Promise<{ title: string; text: string } | null> {
+  const htmlToText = (html: string): string =>
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/[^\S\n]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+
+  try {
+    const zai = await getZAI()
+    const result = (await zai.functions.invoke('page_reader', { url })) as {
+      data?: { title?: string; html?: string; publishedTime?: string }
+    }
+    const title = result?.data?.title ?? ''
+    const text = htmlToText(result?.data?.html ?? '')
+    if (text) return { title, text: text.slice(0, 3500) }
+  } catch (e) {
+    console.error('[ai-assistant] page_reader fallback fetch', e)
+  }
+  // fallback: fetch ตรง + ตัด html
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 15_000)
+    const res = await fetch(url, { signal: ctrl.signal, headers: { 'user-agent': 'EDEN-DMS-Assistant/1.0' } })
+    clearTimeout(timer)
+    if (!res.ok) return null
+    const text = htmlToText(await res.text())
+    if (!text) return null
+    return { title: '', text: text.slice(0, 3500) }
+  } catch {
+    return null
+  }
 }
 
 const SEV_TH: Record<string, string> = { low: 'ต่ำ', medium: 'กลาง', high: 'สูง', critical: 'วิกฤต' }
@@ -84,7 +128,7 @@ async function buildPlatformContext(): Promise<string> {
   const occ = shelters.reduce((s, x) => s + x.currentOccupancy, 0)
   L.push(`\n### ศูนย์พักพิง (รวม ${shelters.length} แห่ง — ความจุรวม ${cap.toLocaleString('th-TH')} คน, อยู่ปัจจุบัน ${occ.toLocaleString('th-TH')} คน = ${cap > 0 ? Math.round((occ / cap) * 100) : 0}%)`)
   for (const s of shelters.slice(0, 6)) {
-    L.push(`- ${s.name} (${s.type}) | สถานะ: ${s.status === 'open' ? 'เปิดรับ' : s.status === 'full' ? 'เต็มความจุ' : s.status === 'preparing' ? 'เตรียมพร้อม' : 'ปิด'} | ${s.currentOccupancy}/${s.capacity} คน | ${s.address ?? s.locationName ?? '-'}`)
+    L.push(`- ${s.name} (${s.type}) | สถานะ: ${s.status === 'open' ? 'เปิดรับ' : s.status === 'full' ? 'เต็มความจุ' : s.status === 'preparing' ? 'เตรียมพร้อม' : 'ปิด'} | ${s.currentOccupancy}/${s.capacity} คน | ${s.address ?? '-'}`)
   }
 
   // คลังสิ่งของ
@@ -146,6 +190,7 @@ async function webSearch(question: string): Promise<{ text: string; sources: Web
       url: r.url!,
       host: r.host_name || (() => { try { return new URL(r.url!).hostname } catch { return '-' } })(),
       snippet: (r.snippet ?? '').replace(/\s+/g, ' ').slice(0, 300),
+      date: r.date ?? null,
     }))
 
   if (sources.length === 0) return { text: '', sources: [] }
@@ -171,6 +216,7 @@ function systemPrompt(): string {
 1. ตอบเป็นภาษาไทย กระชับ ตรงประเด็น ใช้ Markdown มีหัวข้อและรายการแบบ bullet อ่านง่าย
 2. ถ้าผู้ใช้ส่ง "[ข้อมูลจากระบบ EDEN DMS]" มาด้วย ให้ใช้ตัวเลขและข้อมูลชุดนั้นเป็นหลัก อ้างอิงรหัสเหตุการณ์/ชื่อคลัง/ตัวเลขจริงที่ปรากฏ และห้ามแต่งตัวเลขเอง หากข้อมูลไม่พอให้ระบุว่า "ต้องตรวจสอบเพิ่มในโมดูล..."
 3. ถ้าผู้ใช้ส่ง "[ผลค้นหาจากภายนอก]" มาด้วย ให้สังเคราะห์ข้อมูลนั้นและอ้างอิงด้วยเลข [1], [2] ตามลำดับแหล่งที่มาที่ให้มา ห้ามคิดเลขอ้างอิงเกินจำนวนแหล่ง
+3.1 ถ้าผู้ใช้ส่ง "[เนื้อหาจากลิงก์ที่แนบ]" มาด้วย ให้ใช้เนื้อหาจากลิงก์นั้นเป็นหลักในการตอบส่วนที่เกี่ยวข้อง และระบุว่าอ้างอิงจากลิงก์ที่แนบ
 4. ถ้าไม่มีข้อมูลทั้งสองชุด ให้ตอบจากความรู้ทั่วไปอย่างรอบคอบ และแนะนำให้ตรวจสอบกับหน่วยงานที่เกี่ยวข้อง (ปภ. 1784, กาชาดไทย ฯลฯ)
 5. ปิดท้ายคำตอบด้วยหัวข้อ "### คำแนะนำที่จำเป็น" เป็น bullet ที่ทำได้จริง (เรียงตามลำดับความสำคัญ) เมื่อคำถามเกี่ยวข้องกับการปฏิบัติ
 6. หากคำถามเกี่ยวกับสถานการณ์ฉุกเฉินเร่งด่วน (มีผู้เสียชีวิต/เสี่ยงชีวิต) ให้เริ่มด้วยข้อความแจ้งเตือน "⚠️ เหตุฉุกเฉิน — โทร 1669 (การแพทย์ฉุกเฉิน) / 1784 (ปภ.) ทันที" แล้วจึงให้รายละเอียด
@@ -209,8 +255,23 @@ export async function POST(req: NextRequest) {
     let webText = ''
     let sources: WebSource[] = []
     let webError: string | null = null
+    // holder box: กัน TS narrowing เป็น never เมื่อ assign ใน callback
+    const pageCtxBox: { v: { url: string; title: string; text: string } | null } = { v: null }
+    let pageError: string | null = null
+
+    // ลิงก์เว็บเพจในคำถาม → อ่านเนื้อหามาเป็นบริบท (ไฟล์ข้อมูล .csv/.json/.xlsx ให้ flow นำเข้าจัดการแยก)
+    const urlMatch = question.match(/https?:\/\/[^\s)]+/)
+    const urlInQuestion = urlMatch?.[0] ?? null
+    const isDataFileUrl = urlInQuestion && DATA_FILE_EXT_RE.test(urlInQuestion)
 
     const tasks: Promise<void>[] = []
+    if (urlInQuestion && !isDataFileUrl) {
+      tasks.push(
+        readPageContext(urlInQuestion)
+          .then((r) => { if (r) pageCtxBox.v = { url: urlInQuestion, title: r.title, text: r.text } })
+          .catch(() => { pageError = urlInQuestion }),
+      )
+    }
     if (usePlatform) {
       tasks.push(
         buildPlatformContext()
@@ -233,6 +294,8 @@ export async function POST(req: NextRequest) {
     if (platformError) userContent += `\n\n[ข้อมูลจากระบบ EDEN DMS]\n(${platformError})`
     if (webText) userContent += `\n\n[ผลค้นหาจากภายนอก]\n${webText}`
     if (webError) userContent += `\n\n[ผลค้นหาจากภายนอก]\n(${webError})`
+    if (pageCtxBox.v) userContent += `\n\n[เนื้อหาจากลิงก์ที่แนบ]\nURL: ${pageCtxBox.v.url}${pageCtxBox.v.title ? `\nหัวข้อ: ${pageCtxBox.v.title}` : ''}\n---\n${pageCtxBox.v.text}`
+    if (pageError) userContent += `\n\n[เนื้อหาจากลิงก์ที่แนบ]\n(อ่านลิงก์ ${pageError} ไม่สำเร็จ — ให้ตอบจากความรู้ทั่วไปและแจ้งผู้ใช้ว่าอ่านลิงก์ไม่ได้)`
 
     const zai = await getZAI()
     const completion = await zai.chat.completions.create({

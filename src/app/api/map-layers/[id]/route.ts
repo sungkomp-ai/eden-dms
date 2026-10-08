@@ -20,7 +20,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const { id } = await params
     const body = (await req.json()) as { visible?: boolean; name?: string; color?: string }
 
-    const data: { visible?: boolean; name?: string; color?: string } = {}
+    const data: { visible?: boolean; name?: string; color?: string; updatedBy?: string } = {}
     if (typeof body.visible === 'boolean') data.visible = body.visible
     if (typeof body.name === 'string' && body.name.trim()) data.name = body.name.trim().slice(0, 120)
     if (typeof body.color === 'string' && COLOR_RE.test(body.color)) data.color = body.color

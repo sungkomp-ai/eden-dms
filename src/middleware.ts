@@ -12,7 +12,7 @@ export function middleware(req: NextRequest) {
 
   const isLoginPage = pathname === '/login'
   const isAuthApi = pathname.startsWith('/api/auth/')
-  const isStatic = pathname.startsWith('/_next') || pathname === '/favicon.ico' || pathname.startsWith('/images')
+  const isStatic = pathname.startsWith('/_next') || pathname === '/favicon.ico' || pathname.startsWith('/images') || pathname.startsWith('/public-data')
 
   if (isLoginPage || isAuthApi || isStatic) return NextResponse.next()
 
