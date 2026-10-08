@@ -686,3 +686,26 @@ Stage Summary:
 - API ใหม่ 2 ตัว + lib ใหม่ 1 ตัว + middleware exemption 1 บรรทัด + UI อัปเกรด — ไม่เปลี่ยน schema.prisma (staging อยู่ใน memory) จึงไม่กระทบ seed
 - ตัวอย่างใช้งาน: กด 📎 เลือก CSV ภาษาไทย → การ์ดพรีวิว → นำเข้า; หรือพิมพ์ "https://.../file.csv" ในแชท; หรือถามพร้อมวางลิงก์ข่าว (AI อ่านเนื้อหาลิงก์มาตอบ)
 - ข้อจำกัด: ≤500 แถว/5MB ต่อการนำเข้า; mapping 1 ไฟล์→1 โมดูล (ไฟล์หลายโมดูลให้แยกไฟล์); การ map อาศัย LLM (มี self-heal แต่คอลัมน์ไม่บอกความหมายก็อาจ map ผิด — ผู้ใช้ตรวจพรีวิวได้ก่อนยืนยัน); staging อยู่ใน process memory (รีสตาร์ตเซิร์ฟเวอร์ = job หาย ต้องแนบใหม่)
+---
+Task ID: 23
+Agent: main (Z.ai Code)
+Task: แก้บั๊ก "Unexpected token '<', \"<html> <h\"... is not valid JSON" เมื่อสั่งผู้ช่วย AI "ค้นหาข้อมูลน้ำท่วม ห้วง 6-7 ต.ค.69 แล้วนำเข้าระบบ" + ยืนยันวงจร ค้นหา→นำเข้าทำงานจริง
+
+Work Log:
+- สำรวจ ai-assistant.tsx + 3 API routes + lib/auth + dev.log → root cause: ฝั่ง client เรียก res.json() ตรง ๆ ทั้ง 3 จุด (chat line 249 / extract 157 / import 616) — คำขอแบบ sync ที่ยาว 22–90s (web_search + LLM) ถูก proxy ตัดกลางทางแล้วตอบ HTML error page (502/504) จน JSON.parse พังและโชว์ raw error ดิบ; วัดจริงด้วย curl: ปกติ 22–23s แต่บางครั้งถึง ~70s → เกิน timeout proxy
+- สร้าง src/lib/ai-tasks.ts (ใหม่): in-memory async task store (Map + TTL 15 นาที + cap 120 + cleanup), createAiTask/taskPhase/taskDone/taskFail, withTimeout(promise, ms, msgThai), handleTaskStatus() = GET handler ร่วม (auth + คืน {status,phase} / done+result / error / 404 message ไทย)
+- รีแฟก 3 routes เป็นแบบ async task: POST อ่าน/ตรวจ input ส่วนที่เร็วแล้วคืน {taskId} ทันที (<1s) — งานนาน (web_search timeout 12s, LLM timeout 110s/90s, fetchExternal 20s) รันเบื้องหลังใน runChat/runExtract/runImport พร้อม taskPhase ภาษาไทยทุก stage (รวบรวมข้อมูล → วิเคราะห์ → เตรียมพรีวิว/บันทึก); GET ?taskId= ติดตามสถานะ — ทุก HTTP request สั้นเสมอ จึงไม่มีทางโดน proxy timeout; extract ย้าย fetchExternal+LLM เข้า background ครบ (work = table|doc|urlfetch), import ย้าย takeJob+importRecords เข้า background
+- client ai-assistant.tsx: safeJson() ตรวจ content-type ก่อน parse (ถ้าได้ HTML → throw "เซิร์ฟเวอร์ตอบสนองผิดปกติ (การเชื่อมต่ออาจถูกตัดกลางคัน) — กรุณาลองอีกครั้งครับ" แทน raw "Unexpected token '<'"), runTask() = POST เริ่มงาน → poll GET ทุก 1.8s (ทน network glitch ≤4 ครั้งติด, deadline 4 นาที) → phase callback; ใช้กับ send/runExtract/doImport; state phase แสดงใน typing bubble ("กำลังรวบรวมข้อมูลจากระบบและแหล่งภายนอก…" ฯลฯ); ChatMsg.retryQuestion + ปุ่ม "ส่งใหม่" ใต้ error bubble (ส่งคำถามเดิมซ้ำด้วยคลิกเดียว)
+- drive-by แก้ pre-existing bug จาก dev.log: PUT /api/alerts/[id] อ่าน req.json() เองแล้วส่ง req ไป updateHandler ที่อ่านซ้ำ → "Body has already been read" 500 ทุกครั้งที่แก้/ส่งการแจ้งเตือน — แก้โดย updateHandler รับ optional preReadBody (lib/api.ts) + alerts route อ่านครั้งเดียวส่งต่อ + audit 'send' เฉพาะเมื่อ PUT สำเร็จ (ตรวจ res.status) + import NextResponse
+- แก้บั๊กตัวเองระหว่างทำ: (1) edit เปิด backtick uid ไม่ปิด → ปิดทันที (2) extract route ตก import moduleCatalogPrompt → ReferenceError ตอน runtime เห็นใน task status แล้วแก้ (3) เพิ่ม console.error raw LLM output ตอน mapping parse fail (debug ภายหลัง)
+- เว้นแต่ /test-import ที่เพิ่มซ้ำใน middleware แล้วลบโฟลเดอร์ทิ้ง (Task 22 มี /public-data exemption + sample ไว้ให้แล้ว — ใช้ตัวเดิม)
+- ทดสอบ curl ครบ: chat POST→taskId→poll→done คำตอบจริง (~70s โดยไม่พัง); extract text CSV ไทย → shelters แมป 4 คอลัมน์ถูก; import jobId → created 2 + สร้าง Location อัตโนมัติ; edge cases: taskId ไม่มี → 404 ไทย, jobId ซ้ำ → "งานนำเข้าหมดอายุ/ถูกใช้แล้ว", ไม่ login → 401 JSON
+- agent-browser E2E: login admin → โมดูลผู้ช่วย AI → เปิดสวิตช์ "ค้นหาข้อมูลภายนอก" → พิมพ์คำสั่งเดิมของผู้ใช้ → เห็น phase "กำลังรวบรวมข้อมูลจากระบบและแหล่งภายนอก…" ระหว่างรอ → ~25s ได้คำตอบ Markdown ครบ (เหตุการณ์/ศูนย์พักพิง/คลัง/คำขอ/คำแนะนำ) + การ์ดแหล่งข้อมูลภายนอก (3) + ป้าย "ใช้ข้อมูลในระบบ·ค้นหาจากภายนอก" + switch คง state + console สะอาด; ทดสอบ import ผ่าน UI: วางลิงก์ CSV (serve จาก /public-data ตรวจ 200) → การ์ดพรีวิว chips แมปครบ → กด "นำเข้าสู่ระบบ (2 รายการ)" → "นำเข้าเสร็จสิ้น: สำเร็จ 2 · ข้าม 0 · ล้มเหลว 0" + toast + ยืนยันข้อมูลเข้า /api/shelters จริง (180/64, 260/150); mobile 390px แสดงผลครบ; PUT alert ทดสอบหลังแก้ → 200
+- Verify: bun run lint exit 0; commit 0bd19a0 (8 files, +511/−182) push origin/main สำเร็จ (aa7eb23..0bd19a0)
+
+Stage Summary:
+- ผู้ช่วย AI ทนทานขึ้นทั้งสถาปัตยกรรม: งาน AI ทุกประเภท (แชท/วิเคราะห์ไฟล์/นำเข้า) เป็น async task + poll — ไม่มี HTTP request ยาวอีกต่อไป จึงตัดโจทย์ proxy timeout ที่ต้นเหตุ; แม้ proxy ยังตัดบาง request ฝั่ง client ก็แสดงข้อความไทยเข้าใจง่าย + ปุ่มส่งใหม่ ไม่ใช่ "Unexpected token '<'" อีก
+- ได้ UX เสริม: phase indicator แบบ realtime (เห็นว่า AI กำลังค้น/กำลังคิด/กำลังบันทึก), ส่งใหม่ด้วยคลิกเดียว, poll ทน network ขัดข้องชั่วคราว, timeout จำกัดทุก stage backend (web 12s / LLM 110s / ดาวน์โหลด 20s) กันงานค้างไม่มีวันจบ
+- แก้ bug แจ้งเตือน (alert PUT) ที่พังหมดทุกครั้งที่บันทึก/ส่ง โดยไม่รู้ตัว
+- ไฟล์แก้: src/lib/ai-tasks.ts (ใหม่), api/ai-assistant/route.ts, api/ai-assistant/extract/route.ts, api/ai-assistant/import/route.ts, components/eden/ai-assistant.tsx, lib/api.ts, api/alerts/[id]/route.ts; middleware.ts เปลี่ยนกลับเป็นของเดิม (สุทธิไม่แตะ)
+- ข้อจำกัด: task store อยู่ใน process memory (dev HMR/รีสตาร์ต = task หาย → client โชว์ message ไทย + ส่งใหม่); production ควรใช้ Redis/DB ถ้า scale หลาย instance
