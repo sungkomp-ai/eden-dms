@@ -709,3 +709,17 @@ Stage Summary:
 - แก้ bug แจ้งเตือน (alert PUT) ที่พังหมดทุกครั้งที่บันทึก/ส่ง โดยไม่รู้ตัว
 - ไฟล์แก้: src/lib/ai-tasks.ts (ใหม่), api/ai-assistant/route.ts, api/ai-assistant/extract/route.ts, api/ai-assistant/import/route.ts, components/eden/ai-assistant.tsx, lib/api.ts, api/alerts/[id]/route.ts; middleware.ts เปลี่ยนกลับเป็นของเดิม (สุทธิไม่แตะ)
 - ข้อจำกัด: task store อยู่ใน process memory (dev HMR/รีสตาร์ต = task หาย → client โชว์ message ไทย + ส่งใหม่); production ควรใช้ Redis/DB ถ้า scale หลาย instance
+
+---
+Task ID: 24
+Agent: main (Z.ai Code)
+Task: push งานล่าสุดขึ้น GitHub (sungkomp-ai/eden-dms)
+
+Work Log:
+- ตรวจ git status: มี commit 0bd19a0 (fix AI Assistant) push ไปแล้ว, เหลือ auto-commit 191443f (worklog Task 23) ยังไม่ push + db/custom.db แก้ไขค้างจากการทดสอบ E2E
+- ยืนยันเนื้อหา commit 191443f = worklog.md บันทึก Task 23 (23 บรรทัด) ถูกต้อง
+- commit db/custom.db (5c57cab) — ข้อมูลศูนย์พักพิงจากการทดสอบนำเข้าผ่าน AI Assistant จริง
+- สั่ง git push origin main (ดูผลด้านล่าง)
+
+Stage Summary:
+- origin/main = 0bd19a0 + 191443f + 5c57cab — ระบบครบทุก Task 1-23: 13 โมดูล UI / 17 API / 15 models / AI Assistant (ค้นหา+ไฟล์+นำเข้า 11 โมดูล แบบ async task+poll) / ข้อมูลน้ำท่วม 2569 จริง / Alert outbox / CSV export
