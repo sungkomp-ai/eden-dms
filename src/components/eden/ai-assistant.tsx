@@ -61,6 +61,7 @@ interface ChatMsg {
   usedPlatform?: boolean
   usedWeb?: boolean
   error?: boolean
+  retryQuestion?: string
   importData?: ImportPreviewData
   importDoc?: ImportDocData
 }
@@ -79,6 +80,56 @@ interface StatsTotals {
 }
 
 const uid = () => `m${Date.now()}${Math.random().toString(36).slice(2, 8)}`
+
+// ---------- ผู้ช่วยเชื่อมต่อ API แบบทนทาน ----------
+// บางคำขอที่ยาวอาจโดน proxy ตัดแล้วได้ HTML error page กลับมา (เช่น 502/504)
+// → ตรวจ content-type ก่อน parse เสมอ เพื่อแสดงข้อผิดพลาดที่อ่านเข้าใจง่าย
+//   (แทน raw error เช่น "Unexpected token '<', \"<html> <h>\"... is not valid JSON")
+async function safeJson<T>(res: Response): Promise<T> {
+  const ct = res.headers.get('content-type') ?? ''
+  if (!ct.includes('application/json')) {
+    throw new Error('เซิร์ฟเวอร์ตอบสนองผิดปกติ (การเชื่อมต่ออาจถูกตัดกลางคัน) — กรุณาลองอีกครั้งครับ')
+  }
+  return (await res.json()) as T
+}
+
+interface TaskStart { taskId?: string; error?: string }
+interface TaskStatus { status?: 'started' | 'done' | 'error'; phase?: string; error?: string }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** เรียก API แบบ async task: POST เริ่มงาน → ติดตามสถานะทุก ~2 วิ → คืนผลลัพธ์เมื่อเสร็จ
+ * ทุกคำขอสั้นเสมอ จึงไม่โดน proxy timeout */
+async function runTask<T>(url: string, init: RequestInit, onPhase?: (phase: string) => void): Promise<T> {
+  const res = await fetch(url, init)
+  const start = await safeJson<TaskStart>(res)
+  if (!res.ok || !start.taskId) throw new Error(start.error ?? `เริ่มงานไม่สำเร็จ (HTTP ${res.status})`)
+
+  const deadline = Date.now() + 4 * 60_000
+  let pollFails = 0
+  while (Date.now() < deadline) {
+    await sleep(1800)
+    let s: TaskStatus
+    try {
+      const st = await fetch(`${url}?taskId=${encodeURIComponent(start.taskId)}`)
+      const body = await safeJson<TaskStatus>(st)
+      if (!st.ok) throw new Error(body.error ?? `ติดตามสถานะไม่สำเร็จ (HTTP ${st.status})`)
+      s = body
+      pollFails = 0
+    } catch (e) {
+      // ดื้อเจอขัดข้องชั่วคราวระหว่าง poll — ถ้าติดต่อกันเกิน 4 ครั้งจึงยอมแพ้
+      pollFails += 1
+      if (pollFails >= 4) {
+        throw new Error(e instanceof Error ? e.message : 'การเชื่อมต่อขาดหายระหว่างติดตามสถานะ — กรุณาลองอีกครั้งครับ')
+      }
+      continue
+    }
+    if (s.status === 'error') throw new Error(s.error ?? 'งานล้มเหลว กรุณาลองใหม่')
+    if (s.status === 'done') return s as T
+    if (s.phase && onPhase) onPhase(s.phase)
+  }
+  throw new Error('งานใช้เวลานานเกินกำหนด — กรุณาลองอีกครั้งครับ')
+}
 
 // นามสกุลไฟล์ข้อมูลที่รองรับ (ฝั่ง client — ตรวจก่อนอัปโหลด)
 const DATA_FILE_RE = /\.(csv|tsv|tab|json|geojson|xlsx|xls|xlsm)$/i
@@ -122,6 +173,8 @@ export default function AIAssistantModule() {
   const [extracting, setExtracting] = React.useState(false)
   const [usePlatform, setUsePlatform] = React.useState(true)
   const [useWeb, setUseWeb] = React.useState(false)
+  const [phase, setPhase] = React.useState('')
+  const lastQuestionRef = React.useRef('')
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const taRef = React.useRef<HTMLTextAreaElement>(null)
   const fileRef = React.useRef<HTMLInputElement>(null)
@@ -139,29 +192,28 @@ export default function AIAssistantModule() {
   async function runExtract(payload: { file?: File; url?: string; note: string; displayText: string }) {
     setMsgs((prev) => [...prev, { id: uid(), role: 'user', content: payload.displayText }])
     setExtracting(true)
+    setPhase('กำลังเริ่มงาน…')
     try {
-      let res: Response
+      let init: RequestInit
       if (payload.file) {
         const fd = new FormData()
         fd.append('file', payload.file)
         fd.append('note', payload.note)
-        res = await fetch('/api/ai-assistant/extract', { method: 'POST', body: fd })
+        init = { method: 'POST', body: fd }
       } else if (payload.url) {
-        res = await fetch('/api/ai-assistant/extract', {
+        init = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: payload.url, note: payload.note }),
-        })
+        }
       } else return
 
-      const json = (await res.json()) as {
+      const json = await runTask<{
         kind?: 'data' | 'document'
         error?: string
         fileName?: string
         summary?: string
-      } & Partial<ImportPreviewData>
-
-      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`)
+      } & Partial<ImportPreviewData>>('/api/ai-assistant/extract', init, setPhase)
 
       if (json.kind === 'data' && json.jobId) {
         setMsgs((prev) => [
@@ -191,6 +243,7 @@ export default function AIAssistantModule() {
       ])
     } finally {
       setExtracting(false)
+      setPhase('')
       taRef.current?.focus()
     }
   }
@@ -238,16 +291,22 @@ export default function AIAssistantModule() {
       .map((m) => ({ role: m.role, content: m.content }))
 
     setMsgs((prev) => [...prev, { id: uid(), role: 'user', content: q }])
+    lastQuestionRef.current = q
     setInput('')
     setSending(true)
+    setPhase('กำลังเริ่มงาน…')
     try {
-      const res = await fetch('/api/ai-assistant', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, history, usePlatform, useWeb: forceWeb ? true : useWeb }),
-      })
-      const json = (await res.json()) as { answer?: string; sources?: WebSourceItem[]; usedPlatform?: boolean; usedWeb?: boolean; error?: string }
-      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`)
+      const json = await runTask<
+        { answer?: string; sources?: WebSourceItem[]; usedPlatform?: boolean; usedWeb?: boolean }
+      >(
+        '/api/ai-assistant',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, history, usePlatform, useWeb: forceWeb ? true : useWeb }),
+        },
+        setPhase,
+      )
       setMsgs((prev) => [
         ...prev,
         {
@@ -262,10 +321,17 @@ export default function AIAssistantModule() {
     } catch (e) {
       setMsgs((prev) => [
         ...prev,
-        { id: uid(), role: 'assistant', content: e instanceof Error ? e.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อ', error: true },
+        {
+          id: uid(),
+          role: 'assistant',
+          content: e instanceof Error ? e.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อ',
+          error: true,
+          retryQuestion: q,
+        },
       ])
     } finally {
       setSending(false)
+      setPhase('')
       taRef.current?.focus()
     }
   }
@@ -380,6 +446,20 @@ export default function AIAssistantModule() {
                     )}
                   </div>
 
+                  {/* ปุ่มส่งคำถามเดิมอีกครั้ง (กรณีขัดข้อง เช่น การเชื่อมต่อถูกตัดกลางคัน) */}
+                  {m.role === 'assistant' && m.error && m.retryQuestion && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1.5 rounded-full border-slate-300 px-3 text-[11px] text-slate-600 hover:border-emerald-300 hover:text-emerald-700"
+                      onClick={() => send(m.retryQuestion)}
+                      disabled={sending || extracting}
+                      aria-label="ส่งคำถามเดิมอีกครั้ง"
+                    >
+                      <Send className="h-3 w-3" /> ส่งใหม่
+                    </Button>
+                  )}
+
                   {/* การ์ดพรีวิวนำเข้าข้อมูล */}
                   {m.role === 'assistant' && m.importData && (
                     <ImportPreviewCard
@@ -452,7 +532,7 @@ export default function AIAssistantModule() {
                     <span className="h-2 w-2 animate-bounce rounded-full bg-emerald-500 [animation-delay:150ms]" />
                     <span className="h-2 w-2 animate-bounce rounded-full bg-emerald-500 [animation-delay:300ms]" />
                     <span className="ml-2 text-[11px] text-slate-400">
-                      {extracting ? 'กำลังอ่านไฟล์ ตรวจจับโมดูล และจับคู่คอลัมน์...' : 'กำลังวิเคราะห์และรวบรวมข้อมูล...'}
+                      {phase || (extracting ? 'กำลังอ่านไฟล์ ตรวจจับโมดูล และจับคู่คอลัมน์...' : 'กำลังวิเคราะห์และรวบรวมข้อมูล...')}
                     </span>
                   </div>
                 </div>
@@ -608,13 +688,11 @@ function ImportPreviewCard({ data, onImported }: { data: ImportPreviewData; onIm
     if (busy || result) return
     setBusy(true)
     try {
-      const res = await fetch('/api/ai-assistant/import', {
+      const json = await runTask<{ error?: string } & ImportResultSummary>('/api/ai-assistant/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId: data.jobId }),
       })
-      const json = (await res.json()) as { error?: string } & ImportResultSummary
-      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`)
       setResult(json)
       onImported(json)
     } catch (e) {

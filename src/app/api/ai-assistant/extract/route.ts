@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser, isResponse } from '@/lib/auth'
 import {
-  parseAnyFile, parseDelimited, parseJsonTable, parseExcel, inferKind,
+  parseDelimited, parseJsonTable, parseExcel, inferKind,
   IMPORT_MODULES, moduleCatalogPrompt, MAX_FILE_BYTES, MAX_IMPORT_ROWS, PREVIEW_ROWS,
   saveJob,
 } from '@/lib/data-import'
+import { createAiTask, taskPhase, taskDone, taskFail, handleTaskStatus, withTimeout, type AiTask } from '@/lib/ai-tasks'
 import ZAI from 'z-ai-web-dev-sdk'
 
 export const dynamic = 'force-dynamic'
@@ -15,6 +16,10 @@ export const maxDuration = 120
 // รับ 3 แหล่ง: ไฟล์แนบ (multipart) | URL ไฟล์ข้อมูล | ข้อความตารางที่วางมา
 // 1) parse เป็นตาราง  2) LLM เลือกโมดูล + จับคู่คอลัมน์→ฟิลด์
 // 3) เก็บ record ลง staging job  4) ตอบพรีวิวให้ผู้ใช้ยืนยันก่อนนำเข้าจริง
+//
+// ทำงานแบบ async task: POST อ่าน/parse ส่วนที่เร็วแล้วคืน { taskId } ทันที
+// งานที่ใช้เวลานาน (ดาวน์โหลด URL / LLM) รันเบื้องหลัง — client ติดตามด้วย GET ?taskId=
+// (กัน proxy timeout ที่เคยคืน HTML error page จน client parse JSON พัง)
 // ============================================================
 
 let zaiInstance: Awaited<ReturnType<typeof ZAI.create>> | null = null
@@ -31,6 +36,12 @@ interface LlmMapping {
   warnings?: string[]
   summary?: string
 }
+
+const LLM_TIMEOUT_MS = 90_000
+
+type ParseTable = ReturnType<typeof parseJsonTable>
+
+// ---------- LLM helpers ----------
 
 function extractJson(text: string): LlmMapping | null {
   try { return JSON.parse(text) as LlmMapping } catch { /* ลองตัด ``` ออก */ }
@@ -78,7 +89,10 @@ async function llmMap(columns: string[], rows: Record<string, string>[], note: s
   })
   const raw = completion.choices[0]?.message?.content?.trim() ?? ''
   const parsed = extractJson(raw)
-  if (!parsed) throw new Error('ผู้ช่วย AI วิเคราะห์โครงสร้างข้อมูลไม่สำเร็จ กรุณาลองใหม่')
+  if (!parsed) {
+    console.error('[ai-assistant/extract] llmMap parse failed, raw:', raw.slice(0, 800))
+    throw new Error('ผู้ช่วย AI วิเคราะห์โครงสร้างข้อมูลไม่สำเร็จ กรุณาลองใหม่')
+  }
   return parsed
 }
 
@@ -138,125 +152,97 @@ async function fetchExternal(url: string): Promise<{ buffer: Buffer; filename: s
   }
 }
 
-export async function POST(req: NextRequest) {
-  const auth = requireUser(req)
-  if (isResponse(auth)) return auth
+// ---------- งานเบื้องหลัง ----------
 
+interface ExtractWork {
+  mode: 'table' | 'doc' | 'urlfetch'
+  table?: ParseTable
+  docText?: string
+  docLabel?: string
+  url?: string
+  source: 'file' | 'url' | 'text'
+  fileName: string
+  note: string
+}
+
+async function runExtract(task: AiTask, work: ExtractWork): Promise<void> {
   try {
-    const contentType = req.headers.get('content-type') ?? ''
-    let table: Awaited<ReturnType<typeof parseJsonTable>> | null = null
-    let fileName = ''
-    let source: 'file' | 'url' | 'text' = 'file'
-    let note = ''
-    let rawTextForDoc: string | null = null
-    let docLabel = 'เอกสาร'
+    let table = work.table ?? null
+    const source = work.source
+    let fileName = work.fileName
+    let rawTextForDoc = work.docText ?? null
+    let docLabel = work.docLabel ?? 'เอกสาร'
 
-    // ---------- 1) รับข้อมูลจาก 3 แหล่ง ----------
-    if (contentType.includes('multipart/form-data')) {
-      const form = await req.formData()
-      const file = form.get('file')
-      note = String(form.get('note') ?? '')
-      if (!(file instanceof File)) {
-        return NextResponse.json({ error: 'ไม่พบไฟล์แนบ — กรุณาเลือกไฟล์ .csv/.tsv/.json/.xlsx' }, { status: 400 })
+    // ดาวน์โหลดไฟล์จาก URL (งานนาน — ทำเบื้องหลัง)
+    if (work.mode === 'urlfetch') {
+      taskPhase(task, 'กำลังดาวน์โหลดไฟล์จากลิงก์…')
+      let fetched: { buffer: Buffer; filename: string; contentType: string }
+      try {
+        fetched = await fetchExternal(work.url!)
+      } catch (e) {
+        taskFail(task, e instanceof Error ? e.message : 'ดาวน์โหลดไฟล์จาก URL ไม่สำเร็จ')
+        return
       }
-      if (file.size > MAX_FILE_BYTES) {
-        return NextResponse.json({ error: 'ไฟล์ใหญ่เกิน 5MB' }, { status: 400 })
-      }
-      fileName = file.name
-      const buf = Buffer.from(await file.arrayBuffer())
-      const kind = inferKind(file.name, file.type)
-      if (kind === 'unknown') {
-        // อาจเป็นเอกสารข้อความ (.txt) — ลอง JSON แล้ว CSV แล้วสรุปเป็นเอกสาร
-        const text = buf.toString('utf-8')
-        try { table = parseJsonTable(text) } catch {
-          try { table = parseDelimited(text) } catch { rawTextForDoc = text; docLabel = file.name }
-        }
-      } else if (kind === 'xlsx') {
-        try { table = parseExcel(buf) } catch (e) {
-          return NextResponse.json({ error: e instanceof Error ? e.message : 'อ่านไฟล์ Excel ไม่สำเร็จ' }, { status: 400 })
-        }
-      } else {
-        const text = buf.toString('utf-8')
-        try { table = kind === 'json' ? parseJsonTable(text) : parseDelimited(text) } catch (e) {
-          rawTextForDoc = text
-          docLabel = file.name
-          if (!(e instanceof Error)) table = null
-        }
-      }
-      source = 'file'
-    } else {
-      const body = (await req.json().catch(() => ({}))) as { url?: string; text?: string; note?: string }
-      note = (body.note ?? '').slice(0, 500)
-      if (body.url) {
-        const url = body.url.trim()
-        if (!/^https?:\/\//i.test(url)) return NextResponse.json({ error: 'URL ต้องขึ้นต้นด้วย http:// หรือ https://' }, { status: 400 })
-        let fetched: { buffer: Buffer; filename: string; contentType: string }
-        try {
-          fetched = await fetchExternal(url)
-        } catch (e) {
-          return NextResponse.json({ error: e instanceof Error ? e.message : 'ดาวน์โหลดไฟล์จาก URL ไม่สำเร็จ' }, { status: 400 })
-        }
-        fileName = fetched.filename || url.split('/').pop() || 'ไฟล์จาก URL'
-        source = 'url'
-        const kind = inferKind(fileName, fetched.contentType)
-        const text = fetched.buffer.toString('utf-8')
-        try {
-          table = kind === 'xlsx' ? parseExcel(fetched.buffer)
-            : kind === 'json' ? parseJsonTable(text)
-              : parseDelimited(text)
-        } catch {
-          // ไม่ใช่ไฟล์ตาราง → อาจเป็นเว็บเพจ/เอกสาร
-          rawTextForDoc = text
-          docLabel = fileName
-        }
-      } else if (body.text) {
-        const text = body.text.trim()
-        if (!text) return NextResponse.json({ error: 'ไม่มีข้อความให้วิเคราะห์' }, { status: 400 })
-        source = 'text'
-        fileName = 'ข้อความที่วาง'
-        try {
-          table = parseJsonTable(text)
-        } catch {
-          try { table = parseDelimited(text) } catch { rawTextForDoc = text; docLabel = 'ข้อความที่วาง' }
-        }
-      } else {
-        return NextResponse.json({ error: 'ระบุข้อมูลที่ต้องการนำเข้า (ไฟล์แนบ / URL / ข้อความ)' }, { status: 400 })
+      fileName = fetched.filename || work.url!.split('/').pop() || 'ไฟล์จาก URL'
+      const kind = inferKind(fileName, fetched.contentType)
+      const text = fetched.buffer.toString('utf-8')
+      try {
+        table = kind === 'xlsx' ? parseExcel(fetched.buffer)
+          : kind === 'json' ? parseJsonTable(text)
+            : parseDelimited(text)
+        rawTextForDoc = null
+      } catch {
+        // ไม่ใช่ไฟล์ตาราง → อาจเป็นเว็บเพจ/เอกสาร
+        rawTextForDoc = text
+        docLabel = fileName
       }
     }
 
     // ---------- 2a) เอกสาร (ไม่ใช่ตาราง) → สรุปให้อ่าน ----------
     if (!table) {
       const text = (rawTextForDoc ?? '').trim()
-      if (!text) return NextResponse.json({ error: 'ไม่สามารถอ่านเนื้อหาของไฟล์ได้' }, { status: 400 })
-      const summary = await llmSummarizeDocument(htmlToText(text), docLabel, note)
-      return NextResponse.json({
-        kind: 'document',
-        fileName,
-        source,
-        summary,
-      })
+      if (!text) {
+        taskFail(task, 'ไม่สามารถอ่านเนื้อหาของไฟล์ได้')
+        return
+      }
+      taskPhase(task, 'กำลังสรุปเนื้อหาเอกสารด้วย AI…')
+      const summary = await withTimeout(
+        llmSummarizeDocument(htmlToText(text), docLabel, work.note),
+        LLM_TIMEOUT_MS,
+        'AI สรุปเอกสารนานเกินกำหนด — กรุณาลองอีกครั้งครับ',
+      )
+      taskDone(task, { kind: 'document', fileName, source, summary })
+      return
     }
 
     if (table.rows.length === 0) {
-      return NextResponse.json({ error: 'ไม่พบแถวข้อมูลในไฟล์' }, { status: 400 })
+      taskFail(task, 'ไม่พบแถวข้อมูลในไฟล์')
+      return
     }
 
     // ---------- 2b) ตาราง → LLM จับคู่โมดูล/คอลัมน์ ----------
-    const mapping = await llmMap(table.columns, table.rows, note)
+    taskPhase(task, 'กำลังตรวจจับโมดูลและจับคู่คอลัมน์ด้วย AI…')
+    const mapping = await withTimeout(
+      llmMap(table.columns, table.rows, work.note),
+      LLM_TIMEOUT_MS,
+      'AI วิเคราะห์โครงสร้างข้อมูลนานเกินกำหนด — กรุณาลองอีกครั้งครับ',
+    )
 
     if (mapping.kind === 'document' && mapping.summary) {
-      return NextResponse.json({ kind: 'document', fileName, source, summary: mapping.summary })
+      taskDone(task, { kind: 'document', fileName, source, summary: mapping.summary })
+      return
     }
 
     const modKey = mapping.module ?? ''
     const mod = IMPORT_MODULES[modKey]
     if (!mod) {
-      return NextResponse.json({
+      taskDone(task, {
         kind: 'document',
         fileName,
         source,
         summary: `ผู้ช่วย AI ตรวจไม่พบโมดูลที่ตรงกับข้อมูลนี้ (${modKey || 'ไม่ระบุ'}) — โมดูลที่รองรับการนำเข้า: ${Object.values(IMPORT_MODULES).map((m) => m.label).join(', ')}`,
       })
+      return
     }
 
     // ใช้คอลัมน์ที่มีจริงเท่านั้น (กัน LLM อ้างคอลัมน์เพี้ยน)
@@ -298,12 +284,13 @@ export async function POST(req: NextRequest) {
       if (col) colMap[col] = fdef.key
     }
     if (Object.keys(colMap).length === 0 && Object.keys(constants).length === 0) {
-      return NextResponse.json({
+      taskDone(task, {
         kind: 'document',
         fileName,
         source,
         summary: `ผู้ช่วย AI จับคู่คอลัมน์ของไฟล์ "${fileName}" กับโมดูล "${mod.label}" ไม่สำเร็จ — โปรดตรวจว่าไฟล์มีคอลัมน์สอดคล้องกับฟิลด์ของโมดูล เช่น ชื่อ/จำนวน/พื้นที่ ฯลฯ`,
       })
+      return
     }
 
     // ประกอบ record ดิบ (ยังไม่ normalize — ให้ import engine ตรวจอีกชั้น)
@@ -328,10 +315,12 @@ export async function POST(req: NextRequest) {
     const jobRecords = truncatedForImport ? allRecords.slice(0, MAX_IMPORT_ROWS) : allRecords
 
     if (jobRecords.length === 0) {
-      return NextResponse.json({ error: 'ไม่มีแถวที่มีข้อมูลใช้ได้หลังจับคู่คอลัมน์' }, { status: 400 })
+      taskFail(task, 'ไม่มีแถวที่มีข้อมูลใช้ได้หลังจับคู่คอลัมน์')
+      return
     }
 
     // ---------- 3) เก็บ staging job + ตอบพรีวิว ----------
+    taskPhase(task, 'กำลังเตรียมพรีวิวข้อมูล…')
     const job = saveJob({
       moduleKey: mod.key,
       moduleLabel: mod.label,
@@ -344,7 +333,7 @@ export async function POST(req: NextRequest) {
     const usedFields = [...new Set([...Object.values(colMap), ...Object.keys(constants)])]
       .map((key) => ({ key, label: mod.fields.find((f) => f.key === key)?.label ?? key }))
 
-    return NextResponse.json({
+    taskDone(task, {
       kind: 'data',
       jobId: job.id,
       module: mod.key,
@@ -360,9 +349,103 @@ export async function POST(req: NextRequest) {
     })
   } catch (e) {
     console.error('[ai-assistant/extract]', e)
+    taskFail(task, e instanceof Error ? e.message : 'เกิดข้อผิดพลาดในการวิเคราะห์ข้อมูล')
+  }
+}
+
+// ---------- API handlers ----------
+
+export async function POST(req: NextRequest) {
+  const auth = requireUser(req)
+  if (isResponse(auth)) return auth
+
+  try {
+    const contentType = req.headers.get('content-type') ?? ''
+    let work: ExtractWork | null = null
+
+    if (contentType.includes('multipart/form-data')) {
+      // ไฟล์แนบ ≤5MB — อ่านและ parse ได้เร็ว ทำตรงนี้ (เหมือนเดิม)
+      const form = await req.formData()
+      const file = form.get('file')
+      const note = String(form.get('note') ?? '')
+      if (!(file instanceof File)) {
+        return NextResponse.json({ error: 'ไม่พบไฟล์แนบ — กรุณาเลือกไฟล์ .csv/.tsv/.json/.xlsx' }, { status: 400 })
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        return NextResponse.json({ error: 'ไฟล์ใหญ่เกิน 5MB' }, { status: 400 })
+      }
+      const buf = Buffer.from(await file.arrayBuffer())
+      const kind = inferKind(file.name, file.type)
+      let table: ParseTable | null = null
+      let rawTextForDoc: string | null = null
+      let docLabel = file.name
+      if (kind === 'unknown') {
+        // อาจเป็นเอกสารข้อความ (.txt) — ลอง JSON แล้ว CSV แล้วสรุปเป็นเอกสาร
+        const text = buf.toString('utf-8')
+        try { table = parseJsonTable(text) } catch {
+          try { table = parseDelimited(text) } catch { rawTextForDoc = text }
+        }
+      } else if (kind === 'xlsx') {
+        try { table = parseExcel(buf) } catch (e) {
+          return NextResponse.json({ error: e instanceof Error ? e.message : 'อ่านไฟล์ Excel ไม่สำเร็จ' }, { status: 400 })
+        }
+      } else {
+        const text = buf.toString('utf-8')
+        try { table = kind === 'json' ? parseJsonTable(text) : parseDelimited(text) } catch (e) {
+          rawTextForDoc = text
+          if (!(e instanceof Error)) table = null
+        }
+      }
+      work = {
+        mode: table ? 'table' : 'doc',
+        table: table ?? undefined,
+        docText: rawTextForDoc ?? undefined,
+        docLabel,
+        source: 'file',
+        fileName: file.name,
+        note,
+      }
+    } else {
+      const body = (await req.json().catch(() => ({}))) as { url?: string; text?: string; note?: string }
+      const note = (body.note ?? '').slice(0, 500)
+      if (body.url) {
+        const url = body.url.trim()
+        if (!/^https?:\/\//i.test(url)) return NextResponse.json({ error: 'URL ต้องขึ้นต้นด้วย http:// หรือ https://' }, { status: 400 })
+        work = { mode: 'urlfetch', url, source: 'url', fileName: '', note }
+      } else if (body.text) {
+        const text = body.text.trim()
+        if (!text) return NextResponse.json({ error: 'ไม่มีข้อความให้วิเคราะห์' }, { status: 400 })
+        let table: ParseTable | null = null
+        let rawTextForDoc: string | null = null
+        try { table = parseJsonTable(text) } catch {
+          try { table = parseDelimited(text) } catch { rawTextForDoc = text }
+        }
+        work = {
+          mode: table ? 'table' : 'doc',
+          table: table ?? undefined,
+          docText: rawTextForDoc ?? undefined,
+          docLabel: 'ข้อความที่วาง',
+          source: 'text',
+          fileName: 'ข้อความที่วาง',
+          note,
+        }
+      } else {
+        return NextResponse.json({ error: 'ระบุข้อมูลที่ต้องการนำเข้า (ไฟล์แนบ / URL / ข้อความ)' }, { status: 400 })
+      }
+    }
+
+    const task = createAiTask()
+    void runExtract(task, work)
+    return NextResponse.json({ taskId: task.id })
+  } catch (e) {
+    console.error('[ai-assistant/extract]', e)
     return NextResponse.json(
       { error: e instanceof Error ? e.message : 'เกิดข้อผิดพลาดในการวิเคราะห์ข้อมูล' },
       { status: 500 },
     )
   }
+}
+
+export async function GET(req: NextRequest) {
+  return handleTaskStatus(req)
 }

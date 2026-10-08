@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser, isResponse } from '@/lib/auth'
 import { db } from '@/lib/db'
+import {
+  createAiTask, taskPhase, taskDone, taskFail, handleTaskStatus, withTimeout, type AiTask,
+} from '@/lib/ai-tasks'
 import ZAI from 'z-ai-web-dev-sdk'
 
 export const dynamic = 'force-dynamic'
@@ -223,7 +226,102 @@ function systemPrompt(): string {
 7. อย่าตอบเรื่องที่ไม่เกี่ยวกับภัยพิบัติ/การบริหารจัดการภายในระบบนี้ ให้ชวนกลับมาที่หน้าที่ของผู้ช่วย`
 }
 
-// ---------- API handler ----------
+// ---------- การทำงานเบื้องหลัง (ใช้เวลานาน — รันใน task กัน proxy timeout) ----------
+const WEB_SEARCH_TIMEOUT_MS = 12_000
+const LLM_TIMEOUT_MS = 110_000
+
+async function runChat(task: AiTask, input: {
+  question: string
+  history: ChatMessage[]
+  usePlatform: boolean
+  useWeb: boolean
+}): Promise<void> {
+  const { question, history, usePlatform, useWeb } = input
+  try {
+    // รวบรวมบริบท (ทำคู่ขนานกัน)
+    let platformText = ''
+    let platformError: string | null = null
+    let webText = ''
+    let sources: WebSource[] = []
+    let webError: string | null = null
+    // holder box: กัน TS narrowing เป็น never เมื่อ assign ใน callback
+    const pageCtxBox: { v: { url: string; title: string; text: string } | null } = { v: null }
+    let pageError: string | null = null
+
+    taskPhase(task, 'กำลังรวบรวมข้อมูลจากระบบและแหล่งภายนอก…')
+
+    // ลิงก์เว็บเพจในคำถาม → อ่านเนื้อหามาเป็นบริบท (ไฟล์ข้อมูล .csv/.json/.xlsx ให้ flow นำเข้าจัดการแยก)
+    const urlMatch = question.match(/https?:\/\/[^\s)]+/)
+    const urlInQuestion = urlMatch?.[0] ?? null
+    const isDataFileUrl = urlInQuestion && DATA_FILE_EXT_RE.test(urlInQuestion)
+
+    const jobs: Promise<void>[] = []
+    if (urlInQuestion && !isDataFileUrl) {
+      jobs.push(
+        readPageContext(urlInQuestion)
+          .then((r) => { if (r) pageCtxBox.v = { url: urlInQuestion, title: r.title, text: r.text } })
+          .catch(() => { pageError = urlInQuestion }),
+      )
+    }
+    if (usePlatform) {
+      jobs.push(
+        buildPlatformContext()
+          .then((t) => { platformText = t })
+          .catch((e) => { console.error('[ai-assistant] platform ctx', e); platformError = 'ดึงข้อมูลจากระบบไม่สำเร็จ' }),
+      )
+    }
+    if (useWeb) {
+      jobs.push(
+        withTimeout(webSearch(question), WEB_SEARCH_TIMEOUT_MS, 'การค้นหาภายนอกใช้เวลานานเกินกำหนด')
+          .then((r) => { webText = r.text; sources = r.sources })
+          .catch((e) => { console.error('[ai-assistant] web search', e); webError = 'ค้นหาข้อมูลภายนอกไม่สำเร็จ' }),
+      )
+    }
+    await Promise.all(jobs)
+
+    // ประกอบข้อความผู้ใช้ + บริบท
+    let userContent = question
+    if (platformText) userContent += `\n\n[ข้อมูลจากระบบ EDEN DMS]\n${platformText}`
+    if (platformError) userContent += `\n\n[ข้อมูลจากระบบ EDEN DMS]\n(${platformError})`
+    if (webText) userContent += `\n\n[ผลค้นหาจากภายนอก]\n${webText}`
+    if (webError) userContent += `\n\n[ผลค้นหาจากภายนอก]\n(${webError})`
+    if (pageCtxBox.v) userContent += `\n\n[เนื้อหาจากลิงก์ที่แนบ]\nURL: ${pageCtxBox.v.url}${pageCtxBox.v.title ? `\nหัวข้อ: ${pageCtxBox.v.title}` : ''}\n---\n${pageCtxBox.v.text}`
+    if (pageError) userContent += `\n\n[เนื้อหาจากลิงก์ที่แนบ]\n(อ่านลิงก์ ${pageError} ไม่สำเร็จ — ให้ตอบจากความรู้ทั่วไปและแจ้งผู้ใช้ว่าอ่านลิงก์ไม่ได้)`
+
+    taskPhase(task, 'กำลังวิเคราะห์และเรียบเรียงคำตอบ…')
+    const zai = await getZAI()
+    const completion = await withTimeout(
+      zai.chat.completions.create({
+        messages: [
+          { role: 'assistant', content: systemPrompt() },
+          ...history,
+          { role: 'user', content: userContent },
+        ],
+        thinking: { type: 'disabled' },
+      }),
+      LLM_TIMEOUT_MS,
+      'ผู้ช่วย AI วิเคราะห์นานเกินกำหนด — กรุณาลองส่งใหม่อีกครั้งครับ',
+    )
+
+    const answer = completion.choices[0]?.message?.content?.trim() ?? ''
+    if (!answer) {
+      taskFail(task, 'ผู้ช่วย AI ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้งครับ')
+      return
+    }
+
+    taskDone(task, {
+      answer,
+      sources,
+      usedPlatform: usePlatform,
+      usedWeb: useWeb && sources.length > 0,
+    })
+  } catch (e) {
+    console.error('[ai-assistant]', e)
+    taskFail(task, e instanceof Error ? e.message : 'เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง')
+  }
+}
+
+// ---------- API handlers (แบบ async task: POST เริ่มงาน → GET ติดตามสถานะ กัน proxy timeout) ----------
 export async function POST(req: NextRequest) {
   const auth = requireUser(req)
   if (isResponse(auth)) return auth
@@ -249,75 +347,9 @@ export async function POST(req: NextRequest) {
           .map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }))
       : []
 
-    // รวบรวมบริบท (ทำคู่ขนานกัน)
-    let platformText = ''
-    let platformError: string | null = null
-    let webText = ''
-    let sources: WebSource[] = []
-    let webError: string | null = null
-    // holder box: กัน TS narrowing เป็น never เมื่อ assign ใน callback
-    const pageCtxBox: { v: { url: string; title: string; text: string } | null } = { v: null }
-    let pageError: string | null = null
-
-    // ลิงก์เว็บเพจในคำถาม → อ่านเนื้อหามาเป็นบริบท (ไฟล์ข้อมูล .csv/.json/.xlsx ให้ flow นำเข้าจัดการแยก)
-    const urlMatch = question.match(/https?:\/\/[^\s)]+/)
-    const urlInQuestion = urlMatch?.[0] ?? null
-    const isDataFileUrl = urlInQuestion && DATA_FILE_EXT_RE.test(urlInQuestion)
-
-    const tasks: Promise<void>[] = []
-    if (urlInQuestion && !isDataFileUrl) {
-      tasks.push(
-        readPageContext(urlInQuestion)
-          .then((r) => { if (r) pageCtxBox.v = { url: urlInQuestion, title: r.title, text: r.text } })
-          .catch(() => { pageError = urlInQuestion }),
-      )
-    }
-    if (usePlatform) {
-      tasks.push(
-        buildPlatformContext()
-          .then((t) => { platformText = t })
-          .catch((e) => { console.error('[ai-assistant] platform ctx', e); platformError = 'ดึงข้อมูลจากระบบไม่สำเร็จ' }),
-      )
-    }
-    if (useWeb) {
-      tasks.push(
-        webSearch(question)
-          .then((r) => { webText = r.text; sources = r.sources })
-          .catch((e) => { console.error('[ai-assistant] web search', e); webError = 'ค้นหาข้อมูลภายนอกไม่สำเร็จ' }),
-      )
-    }
-    await Promise.all(tasks)
-
-    // ประกอบข้อความผู้ใช้ + บริบท
-    let userContent = question
-    if (platformText) userContent += `\n\n[ข้อมูลจากระบบ EDEN DMS]\n${platformText}`
-    if (platformError) userContent += `\n\n[ข้อมูลจากระบบ EDEN DMS]\n(${platformError})`
-    if (webText) userContent += `\n\n[ผลค้นหาจากภายนอก]\n${webText}`
-    if (webError) userContent += `\n\n[ผลค้นหาจากภายนอก]\n(${webError})`
-    if (pageCtxBox.v) userContent += `\n\n[เนื้อหาจากลิงก์ที่แนบ]\nURL: ${pageCtxBox.v.url}${pageCtxBox.v.title ? `\nหัวข้อ: ${pageCtxBox.v.title}` : ''}\n---\n${pageCtxBox.v.text}`
-    if (pageError) userContent += `\n\n[เนื้อหาจากลิงก์ที่แนบ]\n(อ่านลิงก์ ${pageError} ไม่สำเร็จ — ให้ตอบจากความรู้ทั่วไปและแจ้งผู้ใช้ว่าอ่านลิงก์ไม่ได้)`
-
-    const zai = await getZAI()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'assistant', content: systemPrompt() },
-        ...history,
-        { role: 'user', content: userContent },
-      ],
-      thinking: { type: 'disabled' },
-    })
-
-    const answer = completion.choices[0]?.message?.content?.trim() ?? ''
-    if (!answer) {
-      return NextResponse.json({ error: 'ผู้ช่วย AI ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง' }, { status: 502 })
-    }
-
-    return NextResponse.json({
-      answer,
-      sources,
-      usedPlatform: usePlatform,
-      usedWeb: useWeb && sources.length > 0,
-    })
+    const task = createAiTask()
+    void runChat(task, { question, history, usePlatform, useWeb })
+    return NextResponse.json({ taskId: task.id })
   } catch (e) {
     console.error('[ai-assistant]', e)
     return NextResponse.json(
@@ -325,4 +357,8 @@ export async function POST(req: NextRequest) {
       { status: 500 },
     )
   }
+}
+
+export async function GET(req: NextRequest) {
+  return handleTaskStatus(req)
 }

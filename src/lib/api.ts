@@ -236,11 +236,12 @@ export async function getHandler(req: NextRequest, cfg: CrudConfig, id: string) 
 }
 
 /** PUT update */
-export async function updateHandler(req: NextRequest, cfg: CrudConfig, id: string) {
+export async function updateHandler(req: NextRequest, cfg: CrudConfig, id: string, preReadBody?: Record<string, unknown>) {
   const auth = authOrResponse(req)
   if (isResponse(auth)) return auth
   try {
-    const body = (await req.json()) as Record<string, unknown>
+    // preReadBody: route ที่ต้องอ่าน body เองก่อนแล้ว (เช่นเพื่อ audit เงื่อนไขพิเศษ) — กัน "Body has already been read"
+    const body = preReadBody ?? ((await req.json()) as Record<string, unknown>)
     const data: Record<string, unknown> = {}
     for (const f of cfg.fields) {
       if (body[f] !== undefined) data[f] = body[f]

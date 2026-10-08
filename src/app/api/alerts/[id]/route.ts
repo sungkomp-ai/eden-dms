@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { getHandler, updateHandler, deleteHandler, audit, CrudConfig } from '@/lib/api'
 import { getSessionUser } from '@/lib/auth'
 
@@ -23,9 +23,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const body = (await req.json()) as Record<string, unknown>
-  const res = await updateHandler(req, cfg, id)
-  if (body.status === 'sent') await audit('send', 'alerts', 'ส่งการแจ้งเตือน: ' + String(body.title ?? ''), getSessionUser(req)?.name ?? 'system')
+  // อ่าน body ครั้งเดียวแล้วส่งต่อให้ updateHandler (กัน Body has already been read)
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+  const res = await updateHandler(req, cfg, id, body)
+  if (body.status === 'sent' && !(res instanceof NextResponse && res.status >= 400)) {
+    await audit('send', 'alerts', 'ส่งการแจ้งเตือน: ' + String(body.title ?? ''), getSessionUser(req)?.name ?? 'system')
+  }
   return res
 }
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
