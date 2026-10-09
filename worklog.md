@@ -752,10 +752,25 @@ Work Log:
 - สืบสวน: ดู dev.log (task polls) + audit log + ดึงผล task จาก in-memory store — พบ 2 กรณี: (1) ผู้ใช้ถามผ่าน "แชท + สวิตช์ค้นหาภายนอก" (~04:38) ได้คำตอบสรุปอย่างเดียว เพราะ pipeline นำเข้า trigger เฉพาะคำถามที่มีคำว่า "นำเข้า" → ไม่มีปุ่ม/ไม่มีทางนำเข้าจากคำตอบแชทเลย (2) ต่อมาผู้ใช้ใช้คำสั่ง "ค้นหา...และนำเข้าระบบ" + แผงเงื่อนไข (ประเทศไทย, 8–10 ต.ค. 69) ได้ 2 กลุ่มพรีวิว และนำเข้าสำเร็จเองตอน 04:46:52 (ตำแหน่งที่ตั้ง +4) และ 04:47:09 (SITREP +3) — ยืนยันใน DB (จังหวัดฉะเชิงเทรา/พิษณุโลก/ยะลา/อำนาจเจริญ + SITREP รวม 21)
 - แก้ UI (ai-assistant.tsx): (a) เก็บ `question: q` บนข้อความคำตอบแชท (b) ปุ่มใหม่ "📥 นำเข้าข้อมูลจากผลการค้นหานี้เข้าสู่ระบบ" (Download icon, โทน sky ตาม badge เว็บ) แสดงใต้คำตอบทุกฟองที่ `usedWeb && question && !importGroups && !importData` พร้อมคำอธิบายสั้น — กดแล้วรัน runSearchImport ด้วยคำถามเดิม + เงื่อนไขแผง ⚙ ผ่าน `opts.userDisplay` (โชว์ฟองผู้ใช้ "📥 นำเข้าข้อมูลจากผลการค้นหาด้านบนเข้าสู่ระบบ" แทนคำค้นดิบ) (c) bug fix: ปุ่ม "ส่งใหม่" ของ error จาก pipeline นำเข้าเคยกลับไปเป็นแชทธรรมดา (คำถามไม่มีคำ "นำเข้า") → เพิ่ม ChatMsg.retryAsSearchImport + retry button เลือกเส้นทางถูกต้อง (d) ขยาย regex intent นำเข้า ("เก็บ/เพิ่ม เข้าระบบ") (e) อัปเดต WELCOME + หมายเหตุแผงเงื่อนไข
 - Harden backend (search-import/route.ts): web_search คืนว่าง (เกิดจริง 2 ครั้งระหว่างทดสอบ — service hiccup ไม่ throw) → เติม retry อัตโนมัติ 1 ครั้ง (หน่วง 1.5s, คำค้นย่อตัด "ล่าสุด/ตอนนี้/วันนี้/ห้วง", ไม่ใส่ recency) ก่อน taskFail
-- แก้ responsive bug ที่พบระหว่างทดสอบมือถือ: หน้า AI ล้นแนวนอนบน 390px (docW 1153/634) 2 ต้นเหตุ: (1) URL ยาวใน markdown ไม่ถูกตัด → เพิ่ม `[&_p/_li/_h3/_a]:[overflow-wrap:anywhere]` ใน MD_CLS (anywhere ไม่ใช่ break-words เพราะต้องลด min-content จริง) (2) grid wrapper ไม่มี track ชัดเจนบนมือถือ → implicit auto column ขยายตาม max-content → เพิ่ม `grid-cols-1` (minmax(0,1fr)) ตาม pattern แก้ shelters ของ Task 21 — ยืนยัน docW=390 หลังแก้ทั้งกรณีแชทว่าง/คำตอบเว็บเต็ม/การ์ดพรีวิว
+- แก้ responsive bug ที่พบระหว่างทดสอบมือถือ: หน้า AI ล้นแนวนอนบน 390px (docW 1153/634) 2 ต้นเหตุ: (1) URL ยาวใน markdown ไม่ถูกตัด → เพิ่ม คลาส arbitrary-variant ครอบ p, li, h3, a ให้ overflow-wrap เป็น anywhere (เขียนเป็นคลาส 4 อันแยกกันใน MD_CLS — ห้ามพิมพ์ literal ในไฟล์นี้เพราะ Tailwind สแกน worklog.md แล้ว generate CSS พัง) ใน MD_CLS (anywhere ไม่ใช่ break-words เพราะต้องลด min-content จริง) (2) grid wrapper ไม่มี track ชัดเจนบนมือถือ → implicit auto column ขยายตาม max-content → เพิ่ม `grid-cols-1` (minmax(0,1fr)) ตาม pattern แก้ shelters ของ Task 21 — ยืนยัน docW=390 หลังแก้ทั้งกรณีแชทว่าง/คำตอบเว็บเต็ม/การ์ดพรีวิว
 - ทดสอบ E2E (agent-browser ทั้ง desktop + 390px): ถามแชทเว็บ → ปุ่มใหม่ปรากฏ → กด → phase realtime → พรีวิว 3 กลุ่ม (เหตุการณ์ 3 / ตำแหน่งที่ตั้ง 10+ข้าม 3 / SITREP 2) → กดนำเข้าทั้งหมด → "นำเข้าเสร็จสิ้น: สำเร็จ" + toast — audit log 04:59:25/26/28 ยืนยัน และข้อมูลจริงในระบบ: เหตุการณ์น้ำท่วมชัยนาท/ลพบุรี/พระนครศรีอยุธยา (flood/medium/active, 2026-10-09) + SITREP รวม 23 — กรณี error: web_search ว่าง → ข้อความไทย + ปุ่มส่งใหม่ รัน pipeline เดิมถูกต้อง (backend retry ช่วยให้ครั้งถัดไปสำเร็จ) — lint exit 0, tsc ไฟล์งานศูนย์ error, dev.log ไม่มี error
 
 Stage Summary:
 - ปิดช่องว่าง UX ที่ผู้ใช้รายงาน: คำตอบแชทที่ใช้ผลค้นหาภายนอกตอนนี้ "นำเข้าระบบได้ด้วยคลิกเดียว" — กดปุ่มใต้คำตอบ → AI ค้น/วิเคราะห์ตามเงื่อนไข (⚙) → แยกพรีวิวตามโมดูล → ยืนยันก่อนบันทึก + audit ทุกครั้ง (คงนโยบายพรีวิวก่อน import เสมอ)
 - ทนทานขึ้น 3 จุด: web_search ว่าง (auto-retry), ปุ่มส่งใหม่ของ error นำเข้า (รัน pipeline เดิม), overflow มือถือของหน้า AI (grid track + overflow-wrap)
 - ยืนยันว่ารายงานของผู้ใช้เป็นกรณี "แชทธรรมดาไม่มีทางนำเข้า" — การค้นแบบสั่งนำเข้าตรง ๆ ทำงานถูกต้องมาตลอด (ผู้ใช้นำเข้าสำเร็จเอง 04:46–47)
+
+---
+Task ID: 26-b
+Agent: main (Z.ai Code)
+Task: restart ระบบ — เจอ dev server 500 ทั้งเว็บจาก CSS parse error ใน globals.css (compile ของ Tailwind)
+
+Work Log:
+- หยุด dev server เดิมทั้งหมด → พบ log แจ้ง "Parsing CSS source code failed" ที่ globals.css บรรทัด 5510: Tailwind v4 สร้าง selector พัง (variant รวม p li h3 a คั่นด้วย slash ที่ lightningcss parse ไม่ได้)
+- สืบสวนต้นตอ: โค้ดจริงใน ai-assistant.tsx (MD_CLS) เขียนคลาสแยกบรรทัดถูกต้อง — ตัวการคือ worklog.md ที่บันทึกข้อความ literal ของคลาส arbitrary-variant ครอบ p/li/h3/a ไว้ใน section Task 26 → Tailwind v4 สแกนไฟล์ทุกไฟล์ที่ไม่อยู่ใน .gitignore (รวม worklog.md) จึงดึง candidate ประหลาดนี้ไป generate เป็น CSS พังทั้ง build
+- แก้: เปลี่ยนข้อความใน worklog.md Task 26 เป็นคำอธิบายไม่มี literal คลาส (แทนด้วยข้อความเตือนว่าห้ามพิมพ์ literal คลาส Tailwind ในไฟล์นี้); ยืนยัน dev.log ถูก gitignore อยู่แล้ว (ไม่ถูกสแกน); ล้าง .next cache; เคลียร์ dev.log; restart dev server
+- Verify: HTTP 200 ทั้งหน้า root และ login; agent-browser: login admin → dashboard แสดงข้อมูลครบ (เหตุการณ์ 13 ฯลฯ) → โมดูลผู้ช่วย AI render ครบทุกองค์ประกอบ (สวิตช์/แผงเงื่อนไข/คำสั่งด่วน/ช่องพิมพ์) ไม่มี page errors; มือถือ 390px docW=390 ไม่มี overflow แนวนอน; dev.log สะอาด (มีเพียง prisma query ปกติ + API 200)
+
+Stage Summary:
+- ระบบกลับมาทำงานปกติครบทุกส่วนหลัง restart — สาเหตุ 500 คือ Tailwind v4 สแกน worklog.md แล้วเจอ literal คลาส CSS จากการบันทึกงาน Task 26 ไม่ใช่บั๊กในโค้ด
+- ข้อตกลงสำคัญต่อไป: ห้ามเขียน literal Tailwind class (โดยเฉพาะรูปแบบ arbitrary variant/property ที่มีวงเล็บเหลี่ยม) ลงใน worklog.md เพราะ Tailwind สแกนไฟล์นี้ในทุก build — ให้บรรยายเป็นคำอธิบายแทน
