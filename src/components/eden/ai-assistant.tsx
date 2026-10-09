@@ -9,7 +9,7 @@ import {
   Bot, Send, Trash2, Database, Globe, Sparkles, Lightbulb,
   ExternalLink, Loader2, Radio, ArrowUpRight, Phone,
   AlertTriangle, Users, Home, Boxes, ClipboardList, FileText, Bell,
-  Paperclip, FileSpreadsheet, CheckCircle2, XCircle, Link2, Upload,
+  Paperclip, FileSpreadsheet, CheckCircle2, XCircle, Link2, Upload, Download,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -83,6 +83,8 @@ interface ChatMsg {
   usedWeb?: boolean
   error?: boolean
   retryQuestion?: string
+  retryAsSearchImport?: boolean
+  question?: string
   importData?: ImportPreviewData
   importGroups?: ImportPreviewData[]
   importDoc?: ImportDocData
@@ -168,6 +170,7 @@ const WELCOME: ChatMsg = {
 - **ค้นข้อมูลภายนอก** ข่าวและแหล่งข้อมูลล่าสุด (เปิดสวิตช์ "ค้นหาข้อมูลภายนอก") และอ่านลิงก์ที่แนบในคำถามให้อัตโนมัติ
 - **รับไฟล์ข้อมูลภายนอก** CSV / TSV / JSON / Excel — กดปุ่ม 📎 แนบไฟล์ หรือวางลิงก์ไฟล์ข้อมูล ผมจะตรวจจับโมดูลที่เกี่ยวข้องและช่วยนำเข้าสู่ระบบให้ (พรีวิวก่อนบันทึกทุกครั้ง)
 - **ค้นหาภายนอก & นำเข้าตามเงื่อนไข** พิมพ์ "ค้นหา...แล้วนำเข้าระบบ" พร้อมเงื่อนไข (พื้นที่ ช่วงวันที่) ผมจะค้น วิเคราะห์ แยกข้อมูลตามโครงสร้างแต่ละโมดูล แล้วให้พรีวิวก่อนบันทึก
+- **ถามแบบปกติก็นำเข้าได้** เมื่อคำตอบใช้ข้อมูลจากภายนอก จะมีปุ่ม "นำเข้าข้อมูลจากผลการค้นหานี้เข้าสู่ระบบ" ใต้คำตอบ — กดแล้วผมจะวิเคราะห์และแยกเป็นพรีวิวตามโมดูลให้
 
 พิมพ์คำถาม แนบไฟล์ หรือแตะตัวอย่างคำถามทางขวาเพื่อเริ่มได้เลยครับ`,
 }
@@ -198,8 +201,10 @@ const SEARCH_MODULES: { key: string; label: string }[] = [
 ]
 
 // คลาสจัดแต่ง markdown ภายในฟองคำตอบ
+// [overflow-wrap:anywhere] — บังคับตัดคำ URL ยาว (เช่น ลิงก์ Facebook) เพื่อกัน horizontal overflow บนมือถือ
+// ต้องเป็น anywhere (ไม่ใช่ break-words) เพราะ anywhere ลด min-content ของข้อความ ทำให้ flex ย่อได้จริง
 const MD_CLS = cn(
-  'text-[13px] leading-relaxed space-y-2',
+  'text-[13px] leading-relaxed space-y-2 [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_h3]:[overflow-wrap:anywhere] [&_a]:[overflow-wrap:anywhere]',
   '[&_h1]:hidden [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-2 [&_h3]:text-[13px] [&_h3]:font-bold [&_h3]:mt-3 [&_h3]:mb-1',
   '[&_p]:leading-relaxed [&_p]:my-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1',
   '[&_li]:ml-1 [&_strong]:font-semibold [&_hr]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600',
@@ -296,9 +301,10 @@ export default function AIAssistantModule() {
   }
 
   // ---------- ค้นหาภายนอกตามเงื่อนไข & นำเข้า (search-import pipeline) ----------
-  async function runSearchImport(q: string) {
+  // opts.userDisplay — ข้อความฝั่งผู้ใช้ที่โชว์แทนคำค้น (ใช้กับปุ่ม "นำเข้าจากผลการค้นหา" ใต้คำตอบแชท)
+  async function runSearchImport(q: string, opts?: { userDisplay?: string }) {
     if (sending || extracting) return
-    setMsgs((prev) => [...prev, { id: uid(), role: 'user', content: q }])
+    setMsgs((prev) => [...prev, { id: uid(), role: 'user', content: opts?.userDisplay ?? q }])
     setExtracting(true)
     setPhase('กำลังเริ่มงาน…')
     try {
@@ -373,6 +379,7 @@ export default function AIAssistantModule() {
           content: e instanceof Error ? e.message : 'ค้นหาและนำเข้าข้อมูลไม่สำเร็จ',
           error: true,
           retryQuestion: q,
+          retryAsSearchImport: true, // ปุ่ม “ส่งใหม่” ต้องรัน pipeline นำเข้าเดิม (ไม่ใช่แชท)
         },
       ])
     } finally {
@@ -420,7 +427,7 @@ export default function AIAssistantModule() {
     }
 
     // สั่ง "ค้นหา...แล้วนำเข้าระบบ" → pipeline ค้นหาภายนอก + วิเคราะห์ + พรีวิวนำเข้าตามเงื่อนไข
-    const wantsImport = /(นำเข้า|บันทึก\s*(ลง|เข้า)\s*ระบบ|import\s*ระบบ)/i
+    const wantsImport = /(นำเข้า|บันทึก\s*(ลง|เข้า)\s*ระบบ|เก็บ\s*(ลง|เข้า)\s*ระบบ|เพิ่ม\s*(ลง|เข้า)\s*ระบบ|import\s*ระบบ)/i
     const wantsSearch = /(ค้นหา|ค้นข้อมูล|หาข้อมูล|หาข่าว|ข่าว|แหล่งข้อมูล|สถานการณ์.*(ล่าสุด|ภายนอก))/i
     if (wantsImport.test(q) && wantsSearch.test(q)) {
       setInput('')
@@ -459,6 +466,7 @@ export default function AIAssistantModule() {
           sources: json.sources,
           usedPlatform: json.usedPlatform,
           usedWeb: json.usedWeb,
+          question: q, // เก็บคำถามเดิม — ใช้กับปุ่ม "นำเข้าข้อมูลจากผลการค้นหานี้"
         },
       ])
     } catch (e) {
@@ -513,7 +521,8 @@ export default function AIAssistantModule() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {/* grid-cols-1: บังคับ track เป็น minmax(0,1fr) บนมือถือ — กัน implicit auto column ขยายตาม max-content จนเกิด horizontal overflow */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         {/* ===== แชท ===== */}
         {/* self-start: ไม่ยืดตามความสูงของ column ขวา (กันช่องว่างใต้ปุ่มส่ง) */}
         <Card className="flex min-h-0 flex-col self-start">
@@ -596,7 +605,11 @@ export default function AIAssistantModule() {
                       variant="outline"
                       size="sm"
                       className="h-7 gap-1.5 rounded-full border-slate-300 px-3 text-[11px] text-slate-600 hover:border-emerald-300 hover:text-emerald-700"
-                      onClick={() => send(m.retryQuestion)}
+                      onClick={() => {
+                        if (!m.retryQuestion) return
+                        if (m.retryAsSearchImport) void runSearchImport(m.retryQuestion)
+                        else void send(m.retryQuestion)
+                      }}
                       disabled={sending || extracting}
                       aria-label="ส่งคำถามเดิมอีกครั้ง"
                     >
@@ -659,6 +672,26 @@ export default function AIAssistantModule() {
                           </li>
                         ))}
                       </ul>
+                    </div>
+                  )}
+
+                  {/* ปุ่มนำเข้าข้อมูลจากผลการค้นหาภายนอก (คำตอบแชทที่ใช้ผลค้นเว็บ)
+                      → รัน pipeline search-import ด้วยคำถามเดิม + เงื่อนไขแผง ⚙ → พรีวิวตามโมดูล → ยืนยันก่อนบันทึก */}
+                  {m.role === 'assistant' && !m.error && m.usedWeb && m.question && !m.importGroups && !m.importData && (
+                    <div className="flex w-full flex-col items-start gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 rounded-full border-sky-300 bg-sky-50 px-3.5 text-[12px] font-medium text-sky-700 hover:border-sky-400 hover:bg-sky-100"
+                        onClick={() => runSearchImport(m.question!, { userDisplay: '📥 นำเข้าข้อมูลจากผลการค้นหาด้านบนเข้าสู่ระบบ' })}
+                        disabled={sending || extracting}
+                        aria-label="นำเข้าข้อมูลจากผลการค้นหานี้เข้าสู่ระบบ"
+                      >
+                        <Download className="h-3.5 w-3.5" /> นำเข้าข้อมูลจากผลการค้นหานี้เข้าสู่ระบบ
+                      </Button>
+                      <span className="px-1 text-[10px] text-slate-400">
+                        วิเคราะห์ตามเงื่อนไข (⚙) → แยกพรีวิวตามโมดูล → ยืนยันก่อนบันทึกทุกครั้ง
+                      </span>
                     </div>
                   )}
 
@@ -771,7 +804,7 @@ export default function AIAssistantModule() {
                     <Switch checked={condReadPages} onCheckedChange={setCondReadPages} aria-label="อ่านเนื้อหาลิงก์ด้วย" />
                     <span className={cn('text-xs font-medium', condReadPages ? 'text-emerald-700' : 'text-slate-400')}>อ่านเนื้อหาลิงก์ด้วย</span>
                   </label>
-                  <span className="text-[10px] text-slate-400">ใช้กับคำสั่ง &ldquo;ค้นหา...แล้วนำเข้าระบบ&rdquo; เท่านั้น</span>
+                  <span className="text-[10px] text-slate-400">ใช้กับคำสั่ง &ldquo;ค้นหา...แล้วนำเข้าระบบ&rdquo; และปุ่ม &ldquo;นำเข้าข้อมูลจากผลการค้นหา&rdquo;</span>
                 </div>
               </div>
             )}

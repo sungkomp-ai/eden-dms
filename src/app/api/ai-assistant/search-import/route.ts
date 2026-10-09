@@ -295,8 +295,25 @@ async function runSearchImport(task: AiTask, input: SearchImportInput): Promise<
       taskFail(task, e instanceof Error && e.message.includes('เกินกำหนด') ? e.message : 'การค้นหาภายนอกล้มเหลว — กรุณาลองอีกครั้งครับ')
       return
     }
-    const results = (Array.isArray(rawResults) ? (rawResults as SearchResultItem[]) : [])
+    let results = (Array.isArray(rawResults) ? (rawResults as SearchResultItem[]) : [])
       .filter((r) => r && typeof r.url === 'string' && r.url.startsWith('http'))
+    // web_search บางครั้งตอบว่างชั่วคราว (rate limit/hiccup) — retry อีกครั้งด้วยคำค้นย่อ + ไม่ใส่ recency
+    if (results.length === 0) {
+      console.warn('[ai-assistant/search-import] web_search empty — retry once with simplified query')
+      await new Promise((r) => setTimeout(r, 1500))
+      const simplified = `${input.query.replace(/(ล่าสุด|ตอนนี้|วันนี้|ห้วง)/g, ' ').replace(/\s+/g, ' ').trim()}${input.province ? ` ${input.province}` : ''}`.slice(0, 300)
+      try {
+        const retryRaw = await withTimeout(
+          zai.functions.invoke('web_search', { query: simplified, num: 8 }),
+          SEARCH_TIMEOUT_MS,
+          'การค้นหาภายนอกใช้เวลานานเกินกำหนด',
+        )
+        results = (Array.isArray(retryRaw) ? (retryRaw as SearchResultItem[]) : [])
+          .filter((r) => r && typeof r.url === 'string' && r.url.startsWith('http'))
+      } catch (e) {
+        console.error('[ai-assistant/search-import] web_search retry', e)
+      }
+    }
     if (results.length === 0) {
       taskFail(task, 'ไม่พบผลการค้นหาจากแหล่งภายนอก — ลองปรับคำค้นใหม่')
       return
