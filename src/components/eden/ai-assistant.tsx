@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
@@ -31,7 +32,7 @@ interface ImportPreviewData {
   moduleLabel: string
   moduleDescription?: string
   fileName: string
-  source: 'file' | 'url' | 'text'
+  source: 'file' | 'url' | 'text' | 'search'
   totalRows: number
   fields: { key: string; label: string }[]
   mapping: { column: string; field: string }[]
@@ -42,6 +43,26 @@ interface ImportPreviewData {
 interface ImportDocData { fileName: string; summary: string }
 
 interface ImportRowError { row: number; error: string }
+
+/** กลุ่มพรีวิวนำเข้า 1 กลุ่ม จากผลค้นหาภายนอก (/api/ai-assistant/search-import) */
+interface SearchImportGroup {
+  jobId: string
+  module: string
+  moduleLabel: string
+  totalRows: number
+  fields: { key: string; label: string }[]
+  records: Record<string, string>[]
+  warnings?: string[]
+}
+
+interface SearchImportResult {
+  kind?: 'data' | 'document'
+  query?: string
+  analysis?: string
+  sources?: WebSourceItem[]
+  groups?: SearchImportGroup[]
+  filteredOut?: { date?: number; area?: number; invalid?: number; skippedByLlm?: number }
+}
 
 interface ImportResultSummary {
   moduleLabel: string
@@ -63,6 +84,7 @@ interface ChatMsg {
   error?: boolean
   retryQuestion?: string
   importData?: ImportPreviewData
+  importGroups?: ImportPreviewData[]
   importDoc?: ImportDocData
 }
 
@@ -145,6 +167,7 @@ const WELCOME: ChatMsg = {
 - **ให้คำแนะนำที่จำเป็น** การเตรียมพร้อม ตอบโต้ และฟื้นฟู ตามมาตรฐาน ปภ. / ICS / Sendai
 - **ค้นข้อมูลภายนอก** ข่าวและแหล่งข้อมูลล่าสุด (เปิดสวิตช์ "ค้นหาข้อมูลภายนอก") และอ่านลิงก์ที่แนบในคำถามให้อัตโนมัติ
 - **รับไฟล์ข้อมูลภายนอก** CSV / TSV / JSON / Excel — กดปุ่ม 📎 แนบไฟล์ หรือวางลิงก์ไฟล์ข้อมูล ผมจะตรวจจับโมดูลที่เกี่ยวข้องและช่วยนำเข้าสู่ระบบให้ (พรีวิวก่อนบันทึกทุกครั้ง)
+- **ค้นหาภายนอก & นำเข้าตามเงื่อนไข** พิมพ์ "ค้นหา...แล้วนำเข้าระบบ" พร้อมเงื่อนไข (พื้นที่ ช่วงวันที่) ผมจะค้น วิเคราะห์ แยกข้อมูลตามโครงสร้างแต่ละโมดูล แล้วให้พรีวิวก่อนบันทึก
 
 พิมพ์คำถาม แนบไฟล์ หรือแตะตัวอย่างคำถามทางขวาเพื่อเริ่มได้เลยครับ`,
 }
@@ -155,6 +178,23 @@ const QUICK_PROMPTS: { text: string; web?: boolean }[] = [
   { text: 'ศูนย์พักพิงตอนนี้รองรับผู้ประสบภัยได้อีกกี่คน และมีแห่งไหนใกล้เต็มความจุ', web: true },
   { text: 'ข่าวสถานการณ์น้ำท่วมประเทศไทยล่าสุดมีอะไรบ้าง', web: true },
   { text: 'จะนำเข้าไฟล์ข้อมูลภายนอก (CSV/Excel) เข้าสู่โมดูลต่าง ๆ ในระบบได้อย่างไร รองรับโมดูลใดบ้าง' },
+  { text: 'ค้นหาข้อมูลน้ำท่วมนครสวรรค์ ห้วง 6-7 ต.ค. 69 แล้วนำเข้าระบบ', web: true },
+  { text: 'ค้นหาศูนย์พักพิงน้ำท่วมล่าสุดในพระนครศรีอยุธยา แล้วนำเข้าโมดูลศูนย์พักพิง', web: true },
+]
+
+// โมดูลเป้าหมายสำหรับแผงเงื่อนไข (11 โมดูลที่รองรับการนำเข้า)
+const SEARCH_MODULES: { key: string; label: string }[] = [
+  { key: 'incidents', label: 'เหตุการณ์ภัยพิบัติ' },
+  { key: 'locations', label: 'ตำแหน่งที่ตั้ง' },
+  { key: 'shelters', label: 'ศูนย์พักพิง' },
+  { key: 'persons', label: 'ทะเบียนบุคคล' },
+  { key: 'organizations', label: 'องค์กรภาคี' },
+  { key: 'humanResources', label: 'บุคลากร' },
+  { key: 'warehouses', label: 'คลังสินค้า' },
+  { key: 'inventoryItems', label: 'สินค้า/เวชภัณฑ์' },
+  { key: 'aidRequests', label: 'คำขอความช่วยเหลือ' },
+  { key: 'alerts', label: 'การแจ้งเตือน' },
+  { key: 'incidentReports', label: 'รายงาน SITREP' },
 ]
 
 // คลาสจัดแต่ง markdown ภายในฟองคำตอบ
@@ -174,6 +214,13 @@ export default function AIAssistantModule() {
   const [usePlatform, setUsePlatform] = React.useState(true)
   const [useWeb, setUseWeb] = React.useState(false)
   const [phase, setPhase] = React.useState('')
+  // เงื่อนไขการค้นหา & นำเข้า (ใช้เฉพาะ pipeline search-import — ไม่กระทบแชท/ไฟล์)
+  const [condOpen, setCondOpen] = React.useState(false)
+  const [condProvince, setCondProvince] = React.useState('')
+  const [condFrom, setCondFrom] = React.useState('')
+  const [condTo, setCondTo] = React.useState('')
+  const [condModule, setCondModule] = React.useState('')
+  const [condReadPages, setCondReadPages] = React.useState(true)
   const lastQuestionRef = React.useRef('')
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const taRef = React.useRef<HTMLTextAreaElement>(null)
@@ -248,6 +295,93 @@ export default function AIAssistantModule() {
     }
   }
 
+  // ---------- ค้นหาภายนอกตามเงื่อนไข & นำเข้า (search-import pipeline) ----------
+  async function runSearchImport(q: string) {
+    if (sending || extracting) return
+    setMsgs((prev) => [...prev, { id: uid(), role: 'user', content: q }])
+    setExtracting(true)
+    setPhase('กำลังเริ่มงาน…')
+    try {
+      const json = await runTask<SearchImportResult>(
+        '/api/ai-assistant/search-import',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: q,
+            province: condProvince,
+            from: condFrom,
+            to: condTo,
+            module: condModule,
+            readPages: condReadPages,
+          }),
+        },
+        setPhase,
+      )
+
+      if (json.kind === 'data') {
+        const groups = json.groups ?? []
+        const fo = json.filteredOut
+        const filteredTotal = (fo?.date ?? 0) + (fo?.area ?? 0) + (fo?.invalid ?? 0) + (fo?.skippedByLlm ?? 0)
+        const totalRows = groups.reduce((s, g) => s + g.totalRows, 0)
+        let content = '**วิเคราะห์ผลค้นหาตามเงื่อนไข**\n\n' + (json.analysis ?? '')
+        if (filteredTotal > 0) content += `\n\n(กรองทิ้ง ${filteredTotal} รายการที่ไม่ตรงเงื่อนไข/ข้อมูลไม่ครบ)`
+        content += groups.length
+          ? `\n\nพบข้อมูลนำเข้าได้ **${groups.length} กลุ่ม** รวม ${totalRows} รายการ — ตรวจพรีวิวด้านล่างแล้วกด "นำเข้าสู่ระบบ" ได้ครับ`
+          : '\n\nไม่พบข้อมูลที่นำเข้าระบบได้ — ดูสรุปด้านบน หรือปรับเงื่อนไขแล้วลองใหม่'
+        setMsgs((prev) => [
+          ...prev,
+          {
+            id: uid(),
+            role: 'assistant',
+            content,
+            sources: json.sources,
+            usedWeb: true,
+            importGroups: groups.map((g) => ({
+              jobId: g.jobId,
+              module: g.module,
+              moduleLabel: g.moduleLabel,
+              source: 'search' as const,
+              fileName: `ผลค้นหา: ${json.query?.slice(0, 40) ?? q.slice(0, 40)}`,
+              totalRows: g.totalRows,
+              fields: g.fields,
+              mapping: [],
+              records: g.records,
+              warnings: g.warnings ?? [],
+            })),
+          },
+        ])
+      } else {
+        // kind = document — ไม่พบข้อมูลนำเข้าได้ แสดงเป็นสรุปอ่านอย่างเดียว
+        setMsgs((prev) => [
+          ...prev,
+          {
+            id: uid(),
+            role: 'assistant',
+            content: json.analysis ?? 'ไม่พบข้อมูลที่นำเข้าระบบได้ตามเงื่อนไข',
+            sources: json.sources,
+            usedWeb: true,
+          },
+        ])
+      }
+    } catch (e) {
+      setMsgs((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          role: 'assistant',
+          content: e instanceof Error ? e.message : 'ค้นหาและนำเข้าข้อมูลไม่สำเร็จ',
+          error: true,
+          retryQuestion: q,
+        },
+      ])
+    } finally {
+      setExtracting(false)
+      setPhase('')
+      taRef.current?.focus()
+    }
+  }
+
   function handleFileChosen(file: File) {
     if (sending || extracting) return
     if (!DATA_FILE_RE.test(file.name)) {
@@ -277,11 +411,20 @@ export default function AIAssistantModule() {
     if (!q || sending || extracting) return
     if (forceWeb) setUseWeb(true)
 
-    // ลิงก์ไฟล์ข้อมูล (.csv/.json/.xlsx ฯลฯ) → flow นำเข้าแทนแชท
+    // ลิงก์ไฟล์ข้อมูล (.csv/.json/.xlsx ฯลฯ) → flow นำเข้าแทนแชท (ลิงก์ไฟล์ต้องชนะ intent ค้นหา)
     const urlMatch = q.match(/https?:\/\/[^\s]+/)
     if (urlMatch && /\.(csv|tsv|tab|json|geojson|xlsx|xls)(\?|#|$)/i.test(urlMatch[0])) {
       setInput('')
       await runExtract({ url: urlMatch[0], note: q.replace(urlMatch[0], '').trim(), displayText: q })
+      return
+    }
+
+    // สั่ง "ค้นหา...แล้วนำเข้าระบบ" → pipeline ค้นหาภายนอก + วิเคราะห์ + พรีวิวนำเข้าตามเงื่อนไข
+    const wantsImport = /(นำเข้า|บันทึก\s*(ลง|เข้า)\s*ระบบ|import\s*ระบบ)/i
+    const wantsSearch = /(ค้นหา|ค้นข้อมูล|หาข้อมูล|หาข่าว|ข่าว|แหล่งข้อมูล|สถานการณ์.*(ล่าสุด|ภายนอก))/i
+    if (wantsImport.test(q) && wantsSearch.test(q)) {
+      setInput('')
+      await runSearchImport(q)
       return
     }
 
@@ -363,6 +506,7 @@ export default function AIAssistantModule() {
               <Badge variant="outline" className="border-emerald-300 bg-white text-emerald-700"><Lightbulb className="mr-1 h-3 w-3" />คำแนะนำเชิงปฏิบัติการ</Badge>
               <Badge variant="outline" className="border-emerald-300 bg-white text-emerald-700"><Database className="mr-1 h-3 w-3" />ข้อมูลในแพลตฟอร์ม</Badge>
               <Badge variant="outline" className="border-sky-300 bg-white text-sky-700"><Globe className="mr-1 h-3 w-3" />ค้นหาภายนอก</Badge>
+              <Badge variant="outline" className="border-sky-300 bg-white text-sky-700"><Globe className="mr-1 h-3 w-3" />ค้นหา &amp; นำเข้าตามเงื่อนไข</Badge>
               <Badge variant="outline" className="border-violet-300 bg-white text-violet-700"><Upload className="mr-1 h-3 w-3" />รับไฟล์ &amp; นำเข้าข้อมูล</Badge>
             </div>
           </div>
@@ -476,6 +620,23 @@ export default function AIAssistantModule() {
                     />
                   )}
 
+                  {/* การ์ดพรีวิวนำเข้าจากผลค้นหาภายนอก (หลายโมดูลได้) */}
+                  {m.role === 'assistant' && m.importGroups && m.importGroups.map((g, i) => (
+                    <ImportPreviewCard
+                      key={`${m.id}-grp-${i}`}
+                      data={g}
+                      onImported={(r) => {
+                        toast({
+                          title: r.failed.length > 0
+                            ? `นำเข้าสำเร็จ ${r.created} รายการ (ล้มเหลว ${r.failed.length})`
+                            : `นำเข้าสู่ระบบสำเร็จ ${r.created} รายการ`,
+                          description: `${r.moduleLabel} — ${r.fileName}`,
+                          variant: r.created === 0 && r.failed.length > 0 ? 'destructive' : 'default',
+                        })
+                      }}
+                    />
+                  ))}
+
                   {/* แหล่งข้อมูลภายนอกที่อ้างอิง */}
                   {m.role === 'assistant' && m.sources && m.sources.length > 0 && (
                     <div className="w-full rounded-xl border border-slate-200 bg-white p-2.5">
@@ -555,8 +716,65 @@ export default function AIAssistantModule() {
                   <Globe className="h-3.5 w-3.5" /> ค้นหาข้อมูลภายนอก
                 </span>
               </label>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs font-medium text-slate-500 hover:text-emerald-700"
+                onClick={() => setCondOpen((o) => !o)}
+                aria-expanded={condOpen}
+                aria-label="เงื่อนไขการค้นหาและนำเข้า"
+              >
+                ⚙ เงื่อนไขการค้นหา &amp; นำเข้า
+              </Button>
               <span className="hidden text-[11px] text-slate-400 sm:inline">แนบไฟล์ .csv/.json/.xlsx เพื่อนำเข้าข้อมูลสู่ระบบ</span>
             </div>
+
+            {/* แผงเงื่อนไขการค้นหา & นำเข้า (ใช้เฉพาะคำสั่ง "ค้นหา...แล้วนำเข้าระบบ" — ไม่กระทบแชท/ไฟล์) */}
+            {condOpen && (
+              <div className="mb-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50/80 p-3">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <Input
+                    value={condProvince}
+                    onChange={(e) => setCondProvince(e.target.value)}
+                    placeholder="จังหวัด/พื้นที่ (เช่น นครสวรรค์)"
+                    className="h-8 bg-white text-xs"
+                    aria-label="พื้นที่/จังหวัดที่ต้องการค้นหา"
+                  />
+                  <Input
+                    type="date"
+                    value={condFrom}
+                    onChange={(e) => setCondFrom(e.target.value)}
+                    className="h-8 bg-white text-xs"
+                    aria-label="วันที่เริ่มช่วงค้นหา"
+                  />
+                  <Input
+                    type="date"
+                    value={condTo}
+                    onChange={(e) => setCondTo(e.target.value)}
+                    className="h-8 bg-white text-xs"
+                    aria-label="วันที่สิ้นสุดช่วงค้นหา"
+                  />
+                  <select
+                    value={condModule}
+                    onChange={(e) => setCondModule(e.target.value)}
+                    className="h-8 rounded-md border border-input bg-white px-2 text-xs text-slate-700 shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40"
+                    aria-label="โมดูลเป้าหมายสำหรับนำเข้า"
+                  >
+                    <option value="">โมดูล: AI เลือกอัตโนมัติ</option>
+                    {SEARCH_MODULES.map((m) => (
+                      <option key={m.key} value={m.key}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <Switch checked={condReadPages} onCheckedChange={setCondReadPages} aria-label="อ่านเนื้อหาลิงก์ด้วย" />
+                    <span className={cn('text-xs font-medium', condReadPages ? 'text-emerald-700' : 'text-slate-400')}>อ่านเนื้อหาลิงก์ด้วย</span>
+                  </label>
+                  <span className="text-[10px] text-slate-400">ใช้กับคำสั่ง &ldquo;ค้นหา...แล้วนำเข้าระบบ&rdquo; เท่านั้น</span>
+                </div>
+              </div>
+            )}
 
             <div className="flex items-end gap-2">
               {/* แนบไฟล์ข้อมูล */}
@@ -588,7 +806,7 @@ export default function AIAssistantModule() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="พิมพ์คำถาม วางลิงก์เว็บ/ลิงก์ไฟล์ข้อมูล หรือกด 📎 แนบไฟล์เพื่อนำเข้าสู่ระบบ..."
+                placeholder={'พิมพ์คำถาม หรือ "ค้นหา...แล้วนำเข้าระบบ" พร้อมเงื่อนไข · แนบไฟล์ · วางลิงก์...'}
                 className="min-h-[44px] resize-none text-sm"
                 rows={1}
                 aria-label="ช่องพิมพ์คำถามถึงผู้ช่วย AI"
@@ -716,7 +934,7 @@ function ImportPreviewCard({ data, onImported }: { data: ImportPreviewData; onIm
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-bold text-slate-800">ตรวจพบข้อมูลนำเข้า: {data.moduleLabel}</p>
           <p className="flex items-center gap-1 truncate text-[10px] text-slate-500">
-            {data.source === 'url' ? <Link2 className="h-2.5 w-2.5 shrink-0" /> : <Paperclip className="h-2.5 w-2.5 shrink-0" />}
+            {data.source === 'search' ? <Globe className="h-2.5 w-2.5 shrink-0" /> : data.source === 'url' ? <Link2 className="h-2.5 w-2.5 shrink-0" /> : <Paperclip className="h-2.5 w-2.5 shrink-0" />}
             {data.fileName} · {fmtNum(data.totalRows)} แถว
           </p>
         </div>

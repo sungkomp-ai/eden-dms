@@ -867,7 +867,7 @@ export interface ImportJob {
   id: string
   moduleKey: string
   moduleLabel: string
-  source: 'file' | 'url' | 'text'
+  source: 'file' | 'url' | 'text' | 'search'
   fileName: string
   records: Record<string, unknown>[]
   warnings: string[]
