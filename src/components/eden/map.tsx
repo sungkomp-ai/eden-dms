@@ -73,8 +73,8 @@ type LMarker = import('leaflet').Marker
 const BASEMAPS = {
   standard: {
     label: 'แผนที่',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap contributors',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles &copy; Esri — Esri, HERE, Garmin, USGS, Intermap, INCREMENT P, NRCan, METI, TomTom',
     maxZoom: 19,
   },
   satellite: {

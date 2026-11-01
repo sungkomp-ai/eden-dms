@@ -34,7 +34,8 @@
 - **Tailwind CSS 4** + **shadcn/ui** (New York) + Lucide Icons
 - **Prisma ORM** + **SQLite**
 - recharts (กราฟสถิติ), framer-motion (transition), next-themes (light/dark)
-- **z-ai-web-dev-sdk** (ฝั่ง backend เท่านั้น): LLM สำหรับผู้ช่วย AI + Web Search
+- ผู้ช่วย AI ใช้ Gemini; เปลี่ยนไปใช้ผู้ให้บริการที่รองรับ OpenAI-compatible Chat Completions ได้ผ่าน environment
+- Gemini ใช้ Google Search grounding สำหรับค้นข้อมูลภายนอก; provider อื่นสามารถใช้ **z-ai-web-dev-sdk** สำหรับค้นเว็บได้
 
 ## การติดตั้งและรันโปรเจกต์
 
@@ -47,12 +48,28 @@ bun install
 # 2) ตั้งค่า environment
 cp .env.example .env
 
-# 3) สร้าง Prisma Client
+# 3) ใส่ Gemini API key ที่ https://aistudio.google.com/apikey
+# AI_API_KEY=YOUR_GEMINI_API_KEY
+
+# 4) สร้าง Prisma Client
 bun run db:generate
 
-# 4) รันเซิร์ฟเวอร์พัฒนา
+# 5) รันเซิร์ฟเวอร์พัฒนา
 bun run dev
 ```
+
+ตั้งค่า `.env` เพื่อใช้ Gemini ผ่าน OpenAI-compatible Chat Completions (`gemini-2.5-flash`) ค่า `AI_BASE_URL` และ `AI_MODEL` ถูกเตรียมไว้แล้ว ให้ใส่ Gemini API key จาก Google AI Studio ใน `AI_API_KEY` จากนั้นเริ่มเซิร์ฟเวอร์ใหม่ ผู้ให้บริการอื่นที่รองรับรูปแบบ OpenAI-compatible ก็สามารถใช้ได้โดยเปลี่ยน URL, model และ key
+
+Gemini ใช้ Google Search grounding และแสดงแหล่งอ้างอิงจาก API โดยตรง ผู้ให้บริการอื่นที่ต้องการค้นเว็บผ่าน Z.AI ให้สร้าง `.z-ai-config` ที่ root หรือ home directory:
+
+```json
+{
+	"baseUrl": "https://your-zai-provider.example/v1",
+	"apiKey": "YOUR_API_KEY"
+}
+```
+
+อย่า commit `.env` หรือ `.z-ai-config` เพราะมี API key อยู่ภายใน
 
 เปิดเบราว์เซอร์ที่ `http://localhost:3000`
 

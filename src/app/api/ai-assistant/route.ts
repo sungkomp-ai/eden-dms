@@ -8,7 +8,7 @@ export const maxDuration = 120
 // ============================================================
 // EDEN AI Assistant — ผู้เชี่ยวชาญการจัดการภัยพิบัติ
 // วิเคราะห์คำถาม → รวบรวมบริบท (ข้อมูลในระบบ + ค้นหาภายนอก) → ตอบพร้อมคำแนะนำ
-// ใช้ z-ai-web-dev-sdk ฝั่ง backend เท่านั้น
+// ใช้ OpenAI-compatible Chat Completions สำหรับคำตอบ และ Z.AI เฉพาะค้นเว็บ
 // ============================================================
 
 interface ChatMessage {
@@ -21,6 +21,122 @@ interface WebSource {
   url: string
   host: string
   snippet: string
+  date?: string
+}
+
+interface ProviderMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+interface ProviderResponse {
+  choices?: { message?: { content?: string | { text?: string }[] | null } }[]
+  error?: { message?: string }
+}
+
+interface GeminiResponse {
+  candidates?: {
+    content?: { parts?: { text?: string }[] }
+    groundingMetadata?: {
+      groundingChunks?: { web?: { uri?: string; title?: string } }[]
+    }
+  }[]
+  error?: { message?: string }
+}
+
+interface AIConfig {
+  baseUrl: string
+  apiKey: string
+  model: string
+}
+
+class AIProviderError extends Error {
+  constructor(readonly status = 0) { super() }
+}
+
+function getAIConfig(): AIConfig | null {
+  const baseUrl = process.env.AI_BASE_URL?.trim().replace(/\/+$/, '')
+  const model = process.env.AI_MODEL?.trim()
+  if (!baseUrl || !model) return null
+  return { baseUrl, model, apiKey: process.env.AI_API_KEY?.trim() ?? '' }
+}
+
+async function generateAnswer(config: AIConfig, messages: ProviderMessage[]): Promise<string> {
+  let response: Response
+  try {
+    response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+      },
+      body: JSON.stringify({ model: config.model, messages }),
+    })
+  } catch {
+    throw new AIProviderError()
+  }
+
+  const result = await response.json().catch(() => null) as ProviderResponse | null
+  if (!response.ok) {
+    console.error('[ai-assistant] provider response', response.status, result?.error?.message)
+    throw new AIProviderError(response.status)
+  }
+
+  const content = result?.choices?.[0]?.message?.content
+  if (typeof content === 'string') return content.trim()
+  if (Array.isArray(content)) return content.map((part) => part.text ?? '').join('').trim()
+  return ''
+}
+
+async function generateGeminiAnswer(
+  config: AIConfig,
+  messages: ProviderMessage[],
+  useWeb: boolean,
+): Promise<{ answer: string; sources: WebSource[] }> {
+  const apiRoot = config.baseUrl.replace(/\/openai\/?$/, '')
+  let response: Response
+  try {
+    response = await fetch(
+      `${apiRoot}/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: messages.find((message) => message.role === 'system')?.content ?? '' }] },
+          contents: messages
+            .filter((message) => message.role !== 'system')
+            .map((message) => ({
+              role: message.role === 'assistant' ? 'model' : 'user',
+              parts: [{ text: message.content }],
+            })),
+          ...(useWeb ? { tools: [{ googleSearch: {} }] } : {}),
+        }),
+      },
+    )
+  } catch {
+    throw new AIProviderError()
+  }
+
+  const result = await response.json().catch(() => null) as GeminiResponse | null
+  if (!response.ok) {
+    console.error('[ai-assistant] Gemini response', response.status, result?.error?.message)
+    throw new AIProviderError(response.status)
+  }
+
+  const candidate = result?.candidates?.[0]
+  const answer = candidate?.content?.parts?.map((part) => part.text ?? '').join('').trim() ?? ''
+  const seenUrls = new Set<string>()
+  const sources = (candidate?.groundingMetadata?.groundingChunks ?? [])
+    .flatMap((chunk) => {
+      const url = chunk.web?.uri
+      if (!url || seenUrls.has(url)) return []
+      seenUrls.add(url)
+      let host = '-'
+      try { host = new URL(url).hostname } catch { /* ignore malformed citation URL */ }
+      return [{ name: chunk.web?.title || url, url, host, snippet: '' }]
+    })
+
+  return { answer, sources }
 }
 
 // ใช้ instance เดียวซ้ำทั้งโปรเซส (แนวปฏิบัติจาก skill: reuse SDK instance)
@@ -83,7 +199,7 @@ async function buildPlatformContext(): Promise<string> {
   const occ = shelters.reduce((s, x) => s + x.currentOccupancy, 0)
   L.push(`\n### ศูนย์พักพิง (รวม ${shelters.length} แห่ง — ความจุรวม ${cap.toLocaleString('th-TH')} คน, อยู่ปัจจุบัน ${occ.toLocaleString('th-TH')} คน = ${cap > 0 ? Math.round((occ / cap) * 100) : 0}%)`)
   for (const s of shelters.slice(0, 6)) {
-    L.push(`- ${s.name} (${s.type}) | สถานะ: ${s.status === 'open' ? 'เปิดรับ' : s.status === 'full' ? 'เต็มความจุ' : s.status === 'preparing' ? 'เตรียมพร้อม' : 'ปิด'} | ${s.currentOccupancy}/${s.capacity} คน | ${s.address ?? s.locationName ?? '-'}`)
+    L.push(`- ${s.name} (${s.type}) | สถานะ: ${s.status === 'open' ? 'เปิดรับ' : s.status === 'full' ? 'เต็มความจุ' : s.status === 'preparing' ? 'เตรียมพร้อม' : 'ปิด'} | ${s.currentOccupancy}/${s.capacity} คน | ${s.address ?? '-'}`)
   }
 
   // คลังสิ่งของ
@@ -145,6 +261,7 @@ async function webSearch(question: string): Promise<{ text: string; sources: Web
       url: r.url!,
       host: r.host_name || (() => { try { return new URL(r.url!).hostname } catch { return '-' } })(),
       snippet: (r.snippet ?? '').replace(/\s+/g, ' ').slice(0, 300),
+      date: r.date,
     }))
 
   if (sources.length === 0) return { text: '', sources: [] }
@@ -191,8 +308,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'กรุณาระบุคำถาม' }, { status: 400 })
     }
 
+    const aiConfig = getAIConfig()
+    if (!aiConfig) {
+      return NextResponse.json(
+        { error: 'ยังไม่ได้ตั้งค่า AI: กำหนด AI_BASE_URL และ AI_MODEL ในไฟล์ .env แล้วเริ่มเซิร์ฟเวอร์ใหม่' },
+        { status: 503 },
+      )
+    }
+    if (aiConfig.baseUrl.includes('generativelanguage.googleapis.com') && !aiConfig.apiKey) {
+      return NextResponse.json(
+        { error: 'ยังไม่ได้ตั้งค่า Gemini API key: ใส่ key ใน AI_API_KEY ในไฟล์ .env แล้วเริ่มเซิร์ฟเวอร์ใหม่' },
+        { status: 503 },
+      )
+    }
+
     const usePlatform = body.usePlatform !== false
     const useWeb = body.useWeb === true
+    const isGemini = aiConfig.baseUrl.includes('generativelanguage.googleapis.com')
     const history: ChatMessage[] = Array.isArray(body.history)
       ? body.history
           .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
@@ -208,18 +340,32 @@ export async function POST(req: NextRequest) {
     let webError: string | null = null
 
     const tasks: Promise<void>[] = []
+    let platformContextUsed = false
     if (usePlatform) {
       tasks.push(
         buildPlatformContext()
-          .then((t) => { platformText = t })
+          .then((t) => { platformText = t; platformContextUsed = true })
           .catch((e) => { console.error('[ai-assistant] platform ctx', e); platformError = 'ดึงข้อมูลจากระบบไม่สำเร็จ' }),
       )
     }
-    if (useWeb) {
+    if (useWeb && !isGemini) {
       tasks.push(
         webSearch(question)
           .then((r) => { webText = r.text; sources = r.sources })
           .catch((e) => { console.error('[ai-assistant] web search', e); webError = 'ค้นหาข้อมูลภายนอกไม่สำเร็จ' }),
+      )
+    }
+    if (useWeb && isGemini) {
+      tasks.push(
+        generateGeminiAnswer(aiConfig, [
+          { role: 'system', content: 'ค้นหาข้อมูลบนเว็บด้วย Google Search grounding สำหรับคำถามนี้เท่านั้น สรุปข้อเท็จจริงจากแหล่งที่ค้นพบ ห้ามตอบจากความจำ และระบุเมื่อไม่พบข้อมูลที่ยืนยันได้' },
+          { role: 'user', content: question },
+        ], true)
+          .then((result) => {
+            webText = result.answer
+            sources = result.sources
+          })
+          .catch((e) => { console.error('[ai-assistant] Gemini web search', e); webError = 'ค้นหาข้อมูลภายนอกไม่สำเร็จ' }),
       )
     }
     await Promise.all(tasks)
@@ -231,17 +377,17 @@ export async function POST(req: NextRequest) {
     if (webText) userContent += `\n\n[ผลค้นหาจากภายนอก]\n${webText}`
     if (webError) userContent += `\n\n[ผลค้นหาจากภายนอก]\n(${webError})`
 
-    const zai = await getZAI()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'assistant', content: systemPrompt() },
-        ...history,
-        { role: 'user', content: userContent },
-      ],
-      thinking: { type: 'disabled' },
-    })
+    const messages: ProviderMessage[] = [
+      { role: 'system', content: systemPrompt() },
+      ...history,
+      { role: 'user', content: userContent },
+    ]
+    const result = isGemini
+      ? await generateGeminiAnswer(aiConfig, messages, false)
+      : { answer: await generateAnswer(aiConfig, messages), sources }
+    const answer = result.answer
+    if (isGemini && !useWeb) sources = result.sources
 
-    const answer = completion.choices[0]?.message?.content?.trim() ?? ''
     if (!answer) {
       return NextResponse.json({ error: 'ผู้ช่วย AI ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง' }, { status: 502 })
     }
@@ -249,11 +395,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       answer,
       sources,
-      usedPlatform: usePlatform,
+      usedPlatform: platformContextUsed,
       usedWeb: useWeb && sources.length > 0,
     })
   } catch (e) {
     console.error('[ai-assistant]', e)
+    if (e instanceof AIProviderError) {
+      const authError = e.status === 401 || e.status === 403
+      return NextResponse.json(
+        { error: authError
+          ? 'API key ของผู้ให้บริการ AI ยังไม่ได้ตั้งค่าหรือไม่ถูกต้อง โปรดตรวจสอบ AI_API_KEY ในไฟล์ .env'
+          : 'เชื่อมต่อผู้ให้บริการ AI ไม่สำเร็จ กรุณาตรวจสอบ URL และ model' },
+        { status: authError ? 503 : 502 },
+      )
+    }
     return NextResponse.json(
       { error: 'เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง' },
       { status: 500 },
